@@ -1,0 +1,22 @@
+[package]
+name = "peer-observer-agent"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "AI agents for peer-observer Bitcoin P2P network monitoring"
+repository = "https://github.com/peer-observer/peer-observer-agents"
+
+[dependencies]
+axum = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+libc = "0.2.183"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

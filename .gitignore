@@ -1,0 +1,9 @@
+/target
+.env
+/agent_docs/
+AGENTS.md
+.claude/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
