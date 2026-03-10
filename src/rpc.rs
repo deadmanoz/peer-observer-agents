@@ -51,11 +51,12 @@ impl RpcClient {
             );
         }
 
-        // Validate all values look like IP addresses (basic check).
+        // Validate all values are valid IP addresses. This prevents URL injection
+        // (e.g., "@attacker.com" being parsed as a userinfo delimiter by WHATWG URL).
         for (host, ip) in &hosts {
-            if ip.is_empty() {
-                anyhow::bail!("ANNOTATION_AGENT_RPC_HOSTS: host '{host}' has an empty IP address");
-            }
+            ip.parse::<std::net::IpAddr>().with_context(|| {
+                format!("ANNOTATION_AGENT_RPC_HOSTS: host '{host}' has invalid IP '{ip}'")
+            })?;
         }
 
         let http = reqwest::Client::builder()
@@ -74,7 +75,13 @@ impl RpcClient {
 
     /// Call a single RPC method on the given host. Returns the `result` field.
     async fn call(&self, host_ip: &str, method: &str) -> Result<Value> {
-        let url = format!("http://{}:{}/", host_ip, self.port);
+        let ip: std::net::IpAddr = host_ip
+            .parse()
+            .with_context(|| format!("invalid IP address for RPC host: '{host_ip}'"))?;
+        let url = match ip {
+            std::net::IpAddr::V6(_) => format!("http://[{ip}]:{}/", self.port),
+            std::net::IpAddr::V4(_) => format!("http://{ip}:{}/", self.port),
+        };
         let body = JsonRpcRequest {
             jsonrpc: "1.0",
             id: "agent",
@@ -93,7 +100,15 @@ impl RpcClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            anyhow::bail!("RPC {method} on {host_ip} returned HTTP {status}");
+            // Bitcoin Core returns HTTP 500 for RPC-level errors with the actual
+            // error message in the JSON body. Try to extract it for debuggability.
+            let body = resp.text().await.unwrap_or_default();
+            let detail = serde_json::from_str::<JsonRpcResponse>(&body)
+                .ok()
+                .and_then(|r| r.error)
+                .map(|e| format!(": {e}"))
+                .unwrap_or_default();
+            anyhow::bail!("RPC {method} on {host_ip} returned HTTP {status}{detail}");
         }
 
         let rpc_resp: JsonRpcResponse = resp
@@ -107,7 +122,7 @@ impl RpcClient {
 
         rpc_resp
             .result
-            .context(format!("RPC {method} returned null result"))
+            .with_context(|| format!("RPC {method} returned null result"))
     }
 
     /// Pre-fetch all relevant RPC data for an alert, returning formatted context.
@@ -700,7 +715,19 @@ mod tests {
     fn rpc_client_rejects_empty_ip() {
         let result = RpcClient::new(r#"{"bitcoin-03": ""}"#, "user".into(), "pass".into(), 9000);
         assert!(result.is_err());
-        assert!(format!("{:#}", result.unwrap_err()).contains("empty IP"),);
+        assert!(format!("{:#}", result.unwrap_err()).contains("invalid IP"),);
+    }
+
+    #[test]
+    fn rpc_client_rejects_url_injection() {
+        let result = RpcClient::new(
+            r#"{"node": "@attacker.com"}"#,
+            "user".into(),
+            "pass".into(),
+            9000,
+        );
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("invalid IP"),);
     }
 
     #[test]

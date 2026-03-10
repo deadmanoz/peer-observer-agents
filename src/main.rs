@@ -365,26 +365,29 @@ fn format_prior_context(recent: &[GrafanaAnnotationResponse]) -> String {
 /// Claude has access to Prometheus via MCP and can autonomously query metrics,
 /// drill into per-peer data, and correlate across hosts to determine root cause.
 async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<String> {
-    let recent = fetch_recent_annotations(state, alert).await;
-    let prior_context = format_prior_context(&recent);
+    // Fetch prior annotations and RPC data concurrently — they're independent
+    // and can each take up to 30s (Grafana HTTP timeout) / 10s (RPC deadline).
+    let host = alert
+        .labels
+        .get("host")
+        .map(|s| s.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let alertname = alert
+        .labels
+        .get("alertname")
+        .map(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let aid_str = aid.to_string();
 
-    // Pre-fetch Bitcoin Core RPC data for the alert's host (if RPC is configured).
-    let rpc_context = match &state.rpc_client {
-        Some(rpc) => {
-            let host = alert
-                .labels
-                .get("host")
-                .map(|s| s.as_str())
-                .unwrap_or("unknown");
-            let alertname = alert
-                .labels
-                .get("alertname")
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            rpc.prefetch(host, alertname, &aid.to_string()).await
+    let (recent, rpc_context) = tokio::join!(fetch_recent_annotations(state, alert), async {
+        match &state.rpc_client {
+            Some(rpc) => rpc.prefetch(&host, &alertname, &aid_str).await,
+            None => String::new(),
         }
-        None => String::new(),
-    };
+    });
+    let prior_context = format_prior_context(&recent);
 
     let ctx = AlertContext::from_alert(
         &alert.labels,

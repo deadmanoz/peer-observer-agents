@@ -64,6 +64,7 @@ fn sanitize(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
+            '&' => result.push_str("&amp;"),
             '<' => result.push_str("&lt;"),
             '>' => result.push_str("&gt;"),
             _ => result.push(ch),
@@ -125,7 +126,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
         String::new()
     } else {
         format!(
-            "\n## RPC Data (from {s_host} at {now})\n\n\
+            "\n## RPC Data (from {s_host} at approximately {now})\n\n\
              The following data was pre-fetched from the Bitcoin Core node via RPC.\n\
              Use it to identify specific peers, confirm node state, or correlate with\n\
              Prometheus metrics. For current values, use the Prometheus MCP tools.\n\n\
@@ -213,7 +214,7 @@ fn investigation_instructions(alertname: &str, category: &str, started: &DateTim
         // ── P2P message alerts ───────────────────────────────────────────
         "PeerObserverAddressMessageSpike" => {
             r#"1. Query `peerobserver_anomaly:level{anomaly_name="addr_message_rate"}` and compare against `peerobserver_anomaly:upper_band` to confirm spike magnitude.
-2. Check the RPC Data section above for per-peer details — look for peers with `addr_rate_limited: true` and high `bytesrecv_per_msg.addr` values to identify the flooding peer(s) by IP.
+2. Check the RPC Data section above for per-peer details — look for peers with a non-zero `addr_rate_limited` count and high `bytesrecv_per_msg.addr` values to identify the flooding peer(s) by IP.
 3. For the top sender(s), check their connection age, network type, and user agent from the RPC data.
 4. Determine the pattern: is it a single peer flooding, or multiple peers sending bursts simultaneously?
 5. Check if other hosts see the same spike from the same source IP(s) via Prometheus.
@@ -353,7 +354,7 @@ fn investigation_instructions(alertname: &str, category: &str, started: &DateTim
         }
 
         "PeerObserverHighCPU" => {
-            r#"1. Query `rate(node_cpu_seconds_total{mode="idle"}[5m])` to confirm CPU usage exceeds 90%.
+            r#"1. Query `1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))` to confirm CPU usage exceeds 90%. Note: the raw idle metric measures idle time, so a low idle rate (near 0) confirms high CPU usage.
 2. Check per-process CPU usage via process exporter to identify which process is consuming the most CPU.
 3. Common causes: Bitcoin Core IBD (expected), heavy block validation after a long stale period, or a runaway process.
 4. Check if the node is in IBD — high CPU during IBD is completely normal and expected.
@@ -830,7 +831,7 @@ mod tests {
             alertname: "PeerObserverAddressMessageSpike".into(),
             ..default_ctx()
         });
-        assert!(prompt.contains("addr_rate_limited: true"));
+        assert!(prompt.contains("non-zero `addr_rate_limited`"));
         assert!(prompt.contains("RPC Data section"));
     }
 }
