@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pre-fetch Bitcoin Core RPC data (getpeerinfo, getblockchaininfo, getmempoolinfo, etc.) over WireGuard before Claude investigation, giving the agent per-peer IP attribution and node state context
+- Per-alert-type RPC method mapping with filtered responses to minimize token cost
+- `<rpc-data>` prompt section with sanitization against prompt injection
+- Configurable via `ANNOTATION_AGENT_RPC_HOSTS`, `ANNOTATION_AGENT_RPC_USER`, `ANNOTATION_AGENT_RPC_PASSWORD`, `ANNOTATION_AGENT_RPC_PORT`
+- Fail-fast startup validation for partial/malformed RPC configuration
+- Graceful degradation when RPC is unreachable (investigation continues with Prometheus only)
+
 ### Changed
 
 - Sanitize all untrusted fields (labels, annotations, prior context) in investigation prompts with XML data boundary tags to prevent prompt injection

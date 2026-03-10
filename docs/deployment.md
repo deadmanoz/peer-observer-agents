@@ -61,3 +61,33 @@ All config via environment variables prefixed `ANNOTATION_AGENT_*`:
 | `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` | `30` | HTTP client timeout for Grafana API calls |
 | `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` | `600` | Max wall-clock time for a Claude CLI investigation |
 | `ANNOTATION_AGENT_MAX_CONCURRENT` | `4` | Max concurrent Claude investigations (values below 1 are coerced to 1) |
+| `ANNOTATION_AGENT_RPC_HOSTS` | (optional) | JSON map of host names to WireGuard IPs for Bitcoin Core RPC pre-fetch |
+| `ANNOTATION_AGENT_RPC_USER` | `rpc-extractor` | Bitcoin Core RPC username |
+| `ANNOTATION_AGENT_RPC_PASSWORD` | (required if RPC_HOSTS set) | Bitcoin Core RPC password |
+| `ANNOTATION_AGENT_RPC_PORT` | `9000` | Bitcoin Core RPC port (via WireGuard nginx proxy) |
+
+## Bitcoin Core RPC Pre-Fetch
+
+When `ANNOTATION_AGENT_RPC_HOSTS` is set, the agent pre-fetches relevant Bitcoin Core RPC data before invoking Claude. This provides per-peer details (IP addresses, user agents, rate-limited status) that Prometheus aggregate metrics cannot capture.
+
+The RPC pre-fetch maps each alert type to specific RPC methods:
+- **Connection/P2P/security alerts**: `getpeerinfo` (+ `getnetworkinfo` for connection alerts)
+- **Chain health alerts**: `getblockchaininfo`
+- **Mempool alerts**: `getmempoolinfo`
+- **Restart alerts**: `getblockchaininfo` + `uptime`
+- **Infrastructure/meta alerts**: no RPC pre-fetch (not Bitcoin Core related)
+
+RPC responses are filtered per alert type to keep token cost low (e.g., `getpeerinfo` extracts only relevant fields per peer). The filtered data is injected into the investigation prompt as a `<rpc-data>` section.
+
+**Configuration:**
+- `RPC_HOSTS` is a JSON map: `{"bitcoin-03": "10.0.0.3", "vps-dev-01": "10.0.0.4"}`
+- Host names must match the `host` label in Alertmanager alerts
+- RPC credentials use the `rpc-extractor` user (whitelisted for read-only methods in Bitcoin Core)
+- If RPC is unreachable or the host is unmapped, the investigation proceeds with Prometheus data only
+
+**Startup behavior:**
+- `RPC_HOSTS` unset: RPC feature disabled, no error
+- `RPC_HOSTS` set with valid JSON + `RPC_PASSWORD` set: RPC feature enabled
+- `RPC_HOSTS` set with malformed JSON or missing `RPC_PASSWORD`: startup fails fast
+
+The NixOS module in infra-library will need to be updated to generate the `RPC_HOSTS` mapping from `config.infra.nodes` and pass RPC credentials. This is tracked as a separate follow-up.
