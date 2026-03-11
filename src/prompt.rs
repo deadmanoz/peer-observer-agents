@@ -100,9 +100,10 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     let s_dashboard = sanitize(dashboard);
     let s_runbook = sanitize(runbook);
     let s_prior_context = sanitize(prior_context);
-    // RPC context is NOT sanitized here — peer-controlled fields (addr, subver)
-    // are sanitized at the source in filter_peer_info. Sanitizing the whole JSON
-    // blob would corrupt legitimate characters like & in user agents.
+    // rpc.rs has already sanitized rpc_context at the appropriate granularity:
+    // peer-controlled string fields (addr, subver) are sanitized per-field in
+    // filter_peer_info; other RPC blobs are sanitized wholesale in
+    // filter_rpc_response. Sanitizing again here would double-encode entities.
     let s_rpc_context = rpc_context;
 
     let dashboard_line = if s_dashboard.is_empty() {

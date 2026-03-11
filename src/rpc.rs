@@ -31,8 +31,8 @@ struct JsonRpcResponse {
 /// Client for Bitcoin Core JSON-RPC over WireGuard.
 pub struct RpcClient {
     http: reqwest::Client,
-    /// Maps host names (from alert labels) to WireGuard IPs.
-    hosts: HashMap<String, String>,
+    /// Maps host names (from alert labels) to validated WireGuard IPs.
+    hosts: HashMap<String, std::net::IpAddr>,
     port: u16,
     user: String,
     password: String,
@@ -52,22 +52,25 @@ impl fmt::Debug for RpcClient {
 impl RpcClient {
     /// Construct a new RPC client. Fails fast if configuration is invalid.
     pub fn new(hosts_json: &str, user: String, password: String, port: u16) -> Result<Self> {
-        let hosts: HashMap<String, String> = serde_json::from_str(hosts_json).context(
+        let raw_hosts: HashMap<String, String> = serde_json::from_str(hosts_json).context(
             "ANNOTATION_AGENT_RPC_HOSTS is not valid JSON (expected {\"host\": \"ip\", ...})",
         )?;
 
-        if hosts.is_empty() {
+        if raw_hosts.is_empty() {
             anyhow::bail!(
                 "ANNOTATION_AGENT_RPC_HOSTS is empty — must contain at least one host mapping"
             );
         }
 
-        // Validate all values are valid IP addresses. This prevents URL injection
-        // (e.g., "@attacker.com" being parsed as a userinfo delimiter by WHATWG URL).
-        for (host, ip) in &hosts {
-            ip.parse::<std::net::IpAddr>().with_context(|| {
-                format!("ANNOTATION_AGENT_RPC_HOSTS: host '{host}' has invalid IP '{ip}'")
+        // Parse and validate all values as IP addresses at startup. This prevents
+        // URL injection (e.g., "@attacker.com") and stores typed IpAddr values so
+        // call() can format URLs without re-parsing.
+        let mut hosts = HashMap::with_capacity(raw_hosts.len());
+        for (host, ip_str) in &raw_hosts {
+            let ip: std::net::IpAddr = ip_str.parse().with_context(|| {
+                format!("ANNOTATION_AGENT_RPC_HOSTS: host '{host}' has invalid IP '{ip_str}'")
             })?;
+            hosts.insert(host.clone(), ip);
         }
 
         let http = reqwest::Client::builder()
@@ -85,10 +88,7 @@ impl RpcClient {
     }
 
     /// Call a single RPC method on the given host. Returns the `result` field.
-    async fn call(&self, host_ip: &str, method: &str) -> Result<Value> {
-        let ip: std::net::IpAddr = host_ip
-            .parse()
-            .with_context(|| format!("invalid IP address for RPC host: '{host_ip}'"))?;
+    async fn call(&self, ip: std::net::IpAddr, method: &str) -> Result<Value> {
         let url = match ip {
             std::net::IpAddr::V6(_) => format!("http://[{ip}]:{}/", self.port),
             std::net::IpAddr::V4(_) => format!("http://{ip}:{}/", self.port),
@@ -107,7 +107,7 @@ impl RpcClient {
             .json(&body)
             .send()
             .await
-            .with_context(|| format!("RPC request to {host_ip} for {method} failed"))?;
+            .with_context(|| format!("RPC request to {ip} for {method} failed"))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -119,7 +119,7 @@ impl RpcClient {
                 .and_then(|r| r.error)
                 .map(|e| format!(": {e}"))
                 .unwrap_or_default();
-            anyhow::bail!("RPC {method} on {host_ip} returned HTTP {status}{detail}");
+            anyhow::bail!("RPC {method} on {ip} returned HTTP {status}{detail}");
         }
 
         let rpc_resp: JsonRpcResponse = resp
@@ -143,7 +143,7 @@ impl RpcClient {
     /// an empty string — the investigation proceeds with Prometheus only.
     pub async fn prefetch(&self, host: &str, alertname: &str, alert_id: &str) -> String {
         let host_ip = match self.hosts.get(host) {
-            Some(ip) => ip.clone(),
+            Some(&ip) => ip,
             None => {
                 warn!(
                     alert_id = alert_id,
@@ -162,7 +162,7 @@ impl RpcClient {
         // Fan out all RPC calls concurrently under a single deadline.
         let result = tokio::time::timeout(
             RPC_PREFETCH_DEADLINE,
-            self.fetch_all(&host_ip, alertname, methods, alert_id),
+            self.fetch_all(host_ip, alertname, methods, alert_id),
         )
         .await;
 
@@ -183,21 +183,18 @@ impl RpcClient {
     /// Fetch all methods concurrently and format the results.
     async fn fetch_all(
         &self,
-        host_ip: &str,
+        host_ip: std::net::IpAddr,
         alertname: &str,
         methods: Vec<&str>,
         alert_id: &str,
     ) -> String {
-        let ip = host_ip.to_string();
-
         // Fan out all RPC calls concurrently.
         let futs: Vec<_> = methods
             .iter()
             .map(|method| {
-                let ip = ip.clone();
                 let method = method.to_string();
                 async move {
-                    let result = self.call(&ip, &method).await;
+                    let result = self.call(host_ip, &method).await;
                     (method, result)
                 }
             })
@@ -374,6 +371,11 @@ fn sanitize_for_prompt(input: &str) -> String {
 }
 
 /// Peer-controlled string fields that must be sanitized before prompt embedding.
+/// When adding new fields to `peer_info_fields_for_alert`, check whether the
+/// field contains peer-reported data. Known peer-controlled fields:
+/// - `addr` — remote address reported by the peer
+/// - `subver` — user agent string, fully peer-controlled
+/// - `addrlocal` — local address as perceived by the remote peer (not currently used)
 const PEER_CONTROLLED_FIELDS: &[&str] = &["addr", "subver"];
 
 /// Filter a getpeerinfo JSON array to only the specified fields per peer.
