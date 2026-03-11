@@ -161,9 +161,9 @@ async fn main() -> Result<()> {
                 "ANNOTATION_AGENT_RPC_USER must not be empty"
             );
             let rpc_port: u16 = match env::var("ANNOTATION_AGENT_RPC_PORT") {
-                Ok(v) => v.parse().context(format!(
-                    "ANNOTATION_AGENT_RPC_PORT '{v}' is not a valid port number"
-                ))?,
+                Ok(v) => v.parse().with_context(|| {
+                    format!("ANNOTATION_AGENT_RPC_PORT '{v}' is not a valid port number")
+                })?,
                 Err(_) => 9000,
             };
             let client = rpc::RpcClient::new(&hosts_json, rpc_user, rpc_password, rpc_port)

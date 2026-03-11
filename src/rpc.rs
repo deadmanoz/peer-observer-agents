@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 use tracing::warn;
 
@@ -28,7 +29,6 @@ struct JsonRpcResponse {
 }
 
 /// Client for Bitcoin Core JSON-RPC over WireGuard.
-#[derive(Debug)]
 pub struct RpcClient {
     http: reqwest::Client,
     /// Maps host names (from alert labels) to WireGuard IPs.
@@ -36,6 +36,17 @@ pub struct RpcClient {
     port: u16,
     user: String,
     password: String,
+}
+
+impl fmt::Debug for RpcClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RpcClient")
+            .field("hosts", &self.hosts)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 impl RpcClient {
@@ -102,8 +113,8 @@ impl RpcClient {
             let status = resp.status();
             // Bitcoin Core returns HTTP 500 for RPC-level errors with the actual
             // error message in the JSON body. Try to extract it for debuggability.
-            let body = resp.text().await.unwrap_or_default();
-            let detail = serde_json::from_str::<JsonRpcResponse>(&body)
+            let error_body = resp.text().await.unwrap_or_default();
+            let detail = serde_json::from_str::<JsonRpcResponse>(&error_body)
                 .ok()
                 .and_then(|r| r.error)
                 .map(|e| format!(": {e}"))
@@ -369,7 +380,9 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
                                 .filter(|(k, _)| msg_keys.contains(&k.as_str()))
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect();
-                            obj.insert(field.to_string(), Value::Object(filtered_map));
+                            if !filtered_map.is_empty() {
+                                obj.insert(field.to_string(), Value::Object(filtered_map));
+                            }
                         } else {
                             obj.insert(field.to_string(), val.clone());
                         }
