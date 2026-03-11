@@ -117,7 +117,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     };
 
     let now = Utc::now();
-    let investigation = investigation_instructions(&s_alertname, &s_category, started);
+    let investigation = investigation_instructions(alertname, category, started);
 
     let prior_section = if s_prior_context.is_empty() {
         String::new()

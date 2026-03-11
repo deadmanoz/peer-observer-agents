@@ -290,8 +290,13 @@ fn filter_rpc_response(alertname: &str, method: &str, data: &Value) -> String {
             let fields = peer_info_fields_for_alert(alertname);
             filter_peer_info(data, &fields, alertname)
         }
-        // Small responses — serialize in full
-        _ => serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+        // Small responses — serialize in full, then sanitize for safe prompt embedding.
+        // Fields like `warnings` (free-form string) and `localaddresses` (peer-learned)
+        // are not fully under our control.
+        _ => {
+            let json = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+            sanitize_for_prompt(&json)
+        }
     }
 }
 
@@ -379,7 +384,10 @@ const PEER_CONTROLLED_FIELDS: &[&str] = &["addr", "subver"];
 fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
     let peers = match data.as_array() {
         Some(arr) => arr,
-        None => return serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+        None => {
+            let raw = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+            return sanitize_for_prompt(&raw);
+        }
     };
 
     let msg_keys = per_msg_keys_for_alert(alertname);
