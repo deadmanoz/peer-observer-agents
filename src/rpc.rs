@@ -164,6 +164,10 @@ impl RpcClient {
             return (String::new(), None);
         }
 
+        // Record timestamp before fetching so the prompt header reflects when
+        // data was requested, not when the last RPC call finished.
+        let fetched_at = chrono::Utc::now();
+
         // Fan out all RPC calls concurrently under a single deadline.
         let result = tokio::time::timeout(
             RPC_PREFETCH_DEADLINE,
@@ -172,10 +176,8 @@ impl RpcClient {
         .await;
 
         match result {
-            Ok(sections) => {
-                let fetched_at = chrono::Utc::now();
-                (sections, Some(fetched_at))
-            }
+            Ok(sections) if !sections.is_empty() => (sections, Some(fetched_at)),
+            Ok(_) => (String::new(), None),
             Err(_) => {
                 warn!(
                     alert_id = alert_id,
@@ -208,7 +210,7 @@ impl RpcClient {
             })
             .collect();
 
-        let results = futures::future::join_all(futs).await;
+        let results = futures_util::future::join_all(futs).await;
 
         let mut sections = Vec::new();
         for (method, result) in results {
@@ -295,13 +297,9 @@ fn filter_rpc_response(alertname: &str, method: &str, data: &Value) -> String {
             let fields = peer_info_fields_for_alert(alertname);
             filter_peer_info(data, &fields, alertname)
         }
-        // Small responses — serialize in full, then sanitize for safe prompt embedding.
-        // Fields like `warnings` (free-form string) and `localaddresses` (peer-learned)
-        // are not fully under our control.
-        _ => {
-            let json = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
-            sanitize_for_prompt(&json)
-        }
+        // Small responses — serialize in full. Sanitization is handled by
+        // build_investigation_prompt's single pass over the complete rpc_context.
+        _ => serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
     }
 }
 
@@ -382,8 +380,7 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
     let peers = match data.as_array() {
         Some(arr) => arr,
         None => {
-            let raw = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
-            return sanitize_for_prompt(&raw);
+            return serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
         }
     };
 
@@ -409,13 +406,7 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
                                 obj.insert(field.to_string(), Value::Object(filtered_map));
                             }
                         } else {
-                            // Unexpected non-object — sanitize defensively.
-                            let json =
-                                serde_json::to_string(val).unwrap_or_else(|_| val.to_string());
-                            obj.insert(
-                                field.to_string(),
-                                Value::String(sanitize_for_prompt(&json)),
-                            );
+                            obj.insert(field.to_string(), val.clone());
                         }
                     } else if PEER_CONTROLLED_FIELDS.contains(&field) {
                         // Sanitize peer-controlled string values to prevent
