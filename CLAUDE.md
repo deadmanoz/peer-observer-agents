@@ -7,7 +7,9 @@ AI agents for peer-observer Bitcoin P2P network monitoring infrastructure.
 Single Rust binary (`peer-observer-agent`) that receives Alertmanager webhooks and dispatches Claude Code CLI with Prometheus MCP tools to investigate alerts autonomously. Investigation results are posted as Grafana annotations.
 
 ```
-Alertmanager → POST /webhook → peer-observer-agent → Claude CLI (--mcp-config) → Prometheus MCP → Prometheus API
+Alertmanager → POST /webhook → peer-observer-agent → [optional] Bitcoin Core RPC (WireGuard)
+                                        │                     └──▶ Pre-fetched node data in prompt
+                                        ├──▶ Claude CLI (--mcp-config) → Prometheus MCP → Prometheus API
                                         └──▶ Grafana Annotations API
 ```
 
@@ -28,6 +30,7 @@ nix build                      # Build via flake (Linux/CI)
 
 - `src/main.rs` — HTTP server, webhook handler, Claude CLI invocation, Grafana annotation posting, idempotency, telemetry
 - `src/prompt.rs` — Alert context extraction and investigation prompt generation (per-alert and per-category instructions)
+- `src/rpc.rs` — Bitcoin Core JSON-RPC client for pre-fetching node data (getpeerinfo, getblockchaininfo, etc.) over WireGuard
 - `Cargo.toml` — Dependencies
 - `flake.nix` — Nix build definition with checks (package, fmt, clippy, test)
 - `.github/workflows/ci.yml` — CI: fmt, clippy, test, nix build
@@ -60,6 +63,8 @@ Required: `ANNOTATION_AGENT_GRAFANA_API_KEY`, `ANNOTATION_AGENT_MCP_CONFIG`
 
 Optional tuning: `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` (default 30), `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` (default 600), `ANNOTATION_AGENT_MAX_CONCURRENT` (default 4)
 
+Optional RPC pre-fetch: `ANNOTATION_AGENT_RPC_HOSTS` (JSON host→IP map), `ANNOTATION_AGENT_RPC_PASSWORD` (required if RPC_HOSTS set), `ANNOTATION_AGENT_RPC_USER` (default `rpc-extractor`), `ANNOTATION_AGENT_RPC_PORT` (default 9000)
+
 ## Endpoints
 
 - `POST /webhook` — Alertmanager webhook receiver (concurrent per-alert investigation; returns 200/500)
@@ -85,6 +90,7 @@ This crate can be added as a flake input to [infra-library](https://github.com/p
 
 - **Claude CLI over API**: Uses Claude Code CLI (`claude -p`) rather than the Anthropic API directly. This means the service user needs `~/.claude/` credentials but avoids managing API keys.
 - **MCP for Prometheus**: Rather than pre-fetching hardcoded PromQL queries, Claude has direct access to Prometheus via MCP tools and drives the investigation autonomously.
+- **RPC pre-fetch for Bitcoin Core**: When configured, the agent pre-fetches relevant Bitcoin Core RPC data (e.g., `getpeerinfo` for connection alerts, `getblockchaininfo` for chain health alerts) and injects filtered results into the prompt. This gives Claude per-peer IP attribution that Prometheus aggregate metrics cannot provide. RPC responses are filtered per alert type to minimize token cost (~26KB worst case for 125 peers). Graceful degradation: if RPC is unreachable, investigation proceeds with Prometheus only.
 - **JSON output format**: Uses `--output-format json` to capture structured telemetry (num_turns, cost, tokens, duration, session_id).
 - **Unbounded turns**: No `--max-turns` limit — Claude investigates until it has a conclusion. The `is_error` and "Reached max turns" checks prevent posting error text as annotations.
 - **Model**: Defaults to `claude-sonnet-4-6` for fast, cost-effective investigations. Configurable via `ANNOTATION_AGENT_CLAUDE_MODEL`.

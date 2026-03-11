@@ -1,4 +1,5 @@
 mod prompt;
+mod rpc;
 
 use anyhow::{Context, Result};
 use axum::{
@@ -34,6 +35,9 @@ struct AppState {
     log_file: Option<String>,
     claude_timeout: Duration,
     http: reqwest::Client,
+    /// Optional Bitcoin Core RPC client for pre-fetching node data.
+    /// `None` when `ANNOTATION_AGENT_RPC_HOSTS` is not set (feature disabled).
+    rpc_client: Option<rpc::RpcClient>,
     /// Limits the number of concurrent Claude investigations to prevent
     /// resource exhaustion when Alertmanager delivers large grouped batches.
     investigation_semaphore: Semaphore,
@@ -139,23 +143,76 @@ async fn main() -> Result<()> {
         .unwrap_or(DEFAULT_MAX_CONCURRENT)
         .max(1); // Prevent deadlock: 0 permits would block all investigations forever.
 
+    // Bitcoin Core RPC client: enabled when ANNOTATION_AGENT_RPC_HOSTS is set.
+    // Partial/malformed config fails fast at startup.
+    let rpc_client = match env::var("ANNOTATION_AGENT_RPC_HOSTS") {
+        Ok(hosts_json) => {
+            let rpc_password = env::var("ANNOTATION_AGENT_RPC_PASSWORD").context(
+                "ANNOTATION_AGENT_RPC_PASSWORD must be set when ANNOTATION_AGENT_RPC_HOSTS is set",
+            )?;
+            anyhow::ensure!(
+                !rpc_password.is_empty(),
+                "ANNOTATION_AGENT_RPC_PASSWORD must not be empty"
+            );
+            let rpc_user = env::var("ANNOTATION_AGENT_RPC_USER")
+                .unwrap_or_else(|_| "rpc-extractor".to_string());
+            anyhow::ensure!(
+                !rpc_user.is_empty(),
+                "ANNOTATION_AGENT_RPC_USER must not be empty"
+            );
+            let rpc_port: u16 = match env::var("ANNOTATION_AGENT_RPC_PORT") {
+                Ok(v) => {
+                    let p: u16 = v.parse().with_context(|| {
+                        format!("ANNOTATION_AGENT_RPC_PORT '{v}' is not a valid port number")
+                    })?;
+                    anyhow::ensure!(p != 0, "ANNOTATION_AGENT_RPC_PORT must not be 0");
+                    p
+                }
+                Err(_) => 9000,
+            };
+            let client = rpc::RpcClient::new(&hosts_json, rpc_user, rpc_password, rpc_port)
+                .context("invalid RPC configuration")?;
+            info!("RPC prefetch enabled");
+            Some(client)
+        }
+        Err(_) => {
+            info!("RPC prefetch disabled (ANNOTATION_AGENT_RPC_HOSTS not set)");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         grafana_url: env::var("ANNOTATION_AGENT_GRAFANA_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:9321".to_string()),
-        grafana_api_key: env::var("ANNOTATION_AGENT_GRAFANA_API_KEY")
-            .context("ANNOTATION_AGENT_GRAFANA_API_KEY must be set")?,
+        grafana_api_key: {
+            let key = env::var("ANNOTATION_AGENT_GRAFANA_API_KEY")
+                .context("ANNOTATION_AGENT_GRAFANA_API_KEY must be set")?;
+            anyhow::ensure!(
+                !key.is_empty(),
+                "ANNOTATION_AGENT_GRAFANA_API_KEY must not be empty"
+            );
+            key
+        },
         claude_bin: env::var("ANNOTATION_AGENT_CLAUDE_BIN")
             .unwrap_or_else(|_| "claude".to_string()),
         claude_model: env::var("ANNOTATION_AGENT_CLAUDE_MODEL")
             .unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
-        mcp_config: env::var("ANNOTATION_AGENT_MCP_CONFIG")
-            .context("ANNOTATION_AGENT_MCP_CONFIG must be set")?,
+        mcp_config: {
+            let path = env::var("ANNOTATION_AGENT_MCP_CONFIG")
+                .context("ANNOTATION_AGENT_MCP_CONFIG must be set")?;
+            anyhow::ensure!(
+                std::path::Path::new(&path).exists(),
+                "ANNOTATION_AGENT_MCP_CONFIG path does not exist: {path}"
+            );
+            path
+        },
         log_file: env::var("ANNOTATION_AGENT_LOG_FILE").ok(),
         claude_timeout: Duration::from_secs(claude_timeout_secs),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(http_timeout_secs))
             .build()
             .context("failed to build HTTP client")?,
+        rpc_client,
         investigation_semaphore: Semaphore::new(max_concurrent),
     });
 
@@ -326,7 +383,29 @@ fn format_prior_context(recent: &[GrafanaAnnotationResponse]) -> String {
 /// Claude has access to Prometheus via MCP and can autonomously query metrics,
 /// drill into per-peer data, and correlate across hosts to determine root cause.
 async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<String> {
-    let recent = fetch_recent_annotations(state, alert).await;
+    // Fetch prior annotations and RPC data concurrently — they're independent
+    // and can each take up to 30s (Grafana HTTP timeout) / 10s (RPC deadline).
+    let host = alert
+        .labels
+        .get("host")
+        .map(|s| s.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let alertname = alert
+        .labels
+        .get("alertname")
+        .map(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let aid_str = aid.to_string();
+
+    let (recent, (rpc_context, rpc_fetched_at)) =
+        tokio::join!(fetch_recent_annotations(state, alert), async {
+            match &state.rpc_client {
+                Some(rpc) => rpc.prefetch(&host, &alertname, &aid_str).await,
+                None => (String::new(), None),
+            }
+        });
     let prior_context = format_prior_context(&recent);
 
     let ctx = AlertContext::from_alert(
@@ -334,6 +413,8 @@ async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<S
         &alert.annotations,
         alert.starts_at,
         prior_context,
+        rpc_context,
+        rpc_fetched_at,
     );
 
     info!(alert_id = %aid, "calling claude with MCP prometheus tools");
@@ -627,6 +708,7 @@ mod tests {
             log_file: None,
             claude_timeout: Duration::from_secs(DEFAULT_CLAUDE_TIMEOUT_SECS),
             http: reqwest::Client::new(),
+            rpc_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
         })
     }

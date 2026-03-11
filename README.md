@@ -12,6 +12,10 @@ Alertmanager webhook
         v
   peer-observer-agent (Rust HTTP server)
         |
+        |--> [optional] Bitcoin Core RPC (via WireGuard)
+        |         |
+        |         '-->  Pre-fetched node data injected into prompt
+        |
         |-->  Claude CLI (--mcp-config)
         |         |
         |         '-->  prometheus-mcp-server (via uvx)
@@ -41,6 +45,10 @@ Alertmanager webhook
 | `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` | `30` | HTTP client timeout for Grafana API calls |
 | `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` | `600` | Max wall-clock time for a Claude CLI investigation |
 | `ANNOTATION_AGENT_MAX_CONCURRENT` | `4` | Max concurrent Claude investigations (minimum 1) |
+| `ANNOTATION_AGENT_RPC_HOSTS` | (optional) | JSON map of host names to WireGuard IPs for Bitcoin Core RPC pre-fetch (e.g., `{"bitcoin-03":"10.0.0.3"}`) |
+| `ANNOTATION_AGENT_RPC_USER` | `rpc-extractor` | Bitcoin Core RPC username |
+| `ANNOTATION_AGENT_RPC_PASSWORD` | (required if RPC_HOSTS set) | Bitcoin Core RPC password |
+| `ANNOTATION_AGENT_RPC_PORT` | `9000` | Bitcoin Core RPC port (via WireGuard nginx proxy) |
 
 ### Quick Start
 
