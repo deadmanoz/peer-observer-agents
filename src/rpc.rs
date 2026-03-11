@@ -141,7 +141,12 @@ impl RpcClient {
     /// Calls are fanned out concurrently with an overall deadline. On any failure
     /// (host not mapped, RPC unreachable, timeout), logs a warning and returns
     /// an empty string — the investigation proceeds with Prometheus only.
-    pub async fn prefetch(&self, host: &str, alertname: &str, alert_id: &str) -> String {
+    pub async fn prefetch(
+        &self,
+        host: &str,
+        alertname: &str,
+        alert_id: &str,
+    ) -> (String, Option<chrono::DateTime<chrono::Utc>>) {
         let host_ip = match self.hosts.get(host) {
             Some(&ip) => ip,
             None => {
@@ -150,13 +155,13 @@ impl RpcClient {
                     host = host,
                     "host not in RPC_HOSTS mapping, skipping RPC prefetch"
                 );
-                return String::new();
+                return (String::new(), None);
             }
         };
 
         let methods = rpc_methods_for_alert(alertname);
         if methods.is_empty() {
-            return String::new();
+            return (String::new(), None);
         }
 
         // Fan out all RPC calls concurrently under a single deadline.
@@ -167,7 +172,10 @@ impl RpcClient {
         .await;
 
         match result {
-            Ok(sections) => sections,
+            Ok(sections) => {
+                let fetched_at = chrono::Utc::now();
+                (sections, Some(fetched_at))
+            }
             Err(_) => {
                 warn!(
                     alert_id = alert_id,
@@ -175,7 +183,7 @@ impl RpcClient {
                     "RPC prefetch timed out after {:?}, proceeding without RPC data",
                     RPC_PREFETCH_DEADLINE
                 );
-                String::new()
+                (String::new(), None)
             }
         }
     }
@@ -401,7 +409,13 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
                                 obj.insert(field.to_string(), Value::Object(filtered_map));
                             }
                         } else {
-                            obj.insert(field.to_string(), val.clone());
+                            // Unexpected non-object — sanitize defensively.
+                            let json =
+                                serde_json::to_string(val).unwrap_or_else(|_| val.to_string());
+                            obj.insert(
+                                field.to_string(),
+                                Value::String(sanitize_for_prompt(&json)),
+                            );
                         }
                     } else if PEER_CONTROLLED_FIELDS.contains(&field) {
                         // Sanitize peer-controlled string values to prevent

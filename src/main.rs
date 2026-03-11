@@ -385,12 +385,13 @@ async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<S
         .to_string();
     let aid_str = aid.to_string();
 
-    let (recent, rpc_context) = tokio::join!(fetch_recent_annotations(state, alert), async {
-        match &state.rpc_client {
-            Some(rpc) => rpc.prefetch(&host, &alertname, &aid_str).await,
-            None => String::new(),
-        }
-    });
+    let (recent, (rpc_context, rpc_fetched_at)) =
+        tokio::join!(fetch_recent_annotations(state, alert), async {
+            match &state.rpc_client {
+                Some(rpc) => rpc.prefetch(&host, &alertname, &aid_str).await,
+                None => (String::new(), None),
+            }
+        });
     let prior_context = format_prior_context(&recent);
 
     let ctx = AlertContext::from_alert(
@@ -399,6 +400,7 @@ async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<S
         alert.starts_at,
         prior_context,
         rpc_context,
+        rpc_fetched_at,
     );
 
     info!(alert_id = %aid, "calling claude with MCP prometheus tools");
