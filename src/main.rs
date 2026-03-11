@@ -184,14 +184,28 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         grafana_url: env::var("ANNOTATION_AGENT_GRAFANA_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:9321".to_string()),
-        grafana_api_key: env::var("ANNOTATION_AGENT_GRAFANA_API_KEY")
-            .context("ANNOTATION_AGENT_GRAFANA_API_KEY must be set")?,
+        grafana_api_key: {
+            let key = env::var("ANNOTATION_AGENT_GRAFANA_API_KEY")
+                .context("ANNOTATION_AGENT_GRAFANA_API_KEY must be set")?;
+            anyhow::ensure!(
+                !key.is_empty(),
+                "ANNOTATION_AGENT_GRAFANA_API_KEY must not be empty"
+            );
+            key
+        },
         claude_bin: env::var("ANNOTATION_AGENT_CLAUDE_BIN")
             .unwrap_or_else(|_| "claude".to_string()),
         claude_model: env::var("ANNOTATION_AGENT_CLAUDE_MODEL")
             .unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
-        mcp_config: env::var("ANNOTATION_AGENT_MCP_CONFIG")
-            .context("ANNOTATION_AGENT_MCP_CONFIG must be set")?,
+        mcp_config: {
+            let path = env::var("ANNOTATION_AGENT_MCP_CONFIG")
+                .context("ANNOTATION_AGENT_MCP_CONFIG must be set")?;
+            anyhow::ensure!(
+                std::path::Path::new(&path).exists(),
+                "ANNOTATION_AGENT_MCP_CONFIG path does not exist: {path}"
+            );
+            path
+        },
         log_file: env::var("ANNOTATION_AGENT_LOG_FILE").ok(),
         claude_timeout: Duration::from_secs(claude_timeout_secs),
         http: reqwest::Client::builder()

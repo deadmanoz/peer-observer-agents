@@ -105,10 +105,10 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     let s_dashboard = sanitize(dashboard);
     let s_runbook = sanitize(runbook);
     let s_prior_context = sanitize(prior_context);
-    // rpc.rs sanitizes peer-controlled fields (addr, subver, addrlocal) at
-    // the source in filter_peer_info. Non-getpeerinfo responses are Bitcoin
-    // Core-controlled and pass through unsanitized. Do NOT sanitize again
-    // here — it would double-encode the already-escaped peer fields.
+    // rpc.rs sanitizes at the source: peer-controlled fields (addr, subver,
+    // addrlocal) via filter_peer_info, and non-getpeerinfo responses in full
+    // via filter_rpc_response. Do NOT sanitize again here — it would
+    // double-encode the already-escaped content.
     let s_rpc_context = rpc_context;
 
     let dashboard_line = if s_dashboard.is_empty() {

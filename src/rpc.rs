@@ -297,9 +297,13 @@ fn filter_rpc_response(alertname: &str, method: &str, data: &Value) -> String {
             let fields = peer_info_fields_for_alert(alertname);
             filter_peer_info(data, &fields, alertname)
         }
-        // Small responses — serialize in full. Sanitization is handled by
-        // build_investigation_prompt's single pass over the complete rpc_context.
-        _ => serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+        // Small responses — serialize in full, then sanitize for safe prompt
+        // embedding. Fields like `warnings` (free-form string set by operators)
+        // and `localaddresses` (peer-learned) are not fully under our control.
+        _ => {
+            let json = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+            sanitize_for_prompt(&json)
+        }
     }
 }
 
@@ -380,7 +384,8 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
     let peers = match data.as_array() {
         Some(arr) => arr,
         None => {
-            return serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+            let raw = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+            return sanitize_for_prompt(&raw);
         }
     };
 
@@ -406,7 +411,13 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
                                 obj.insert(field.to_string(), Value::Object(filtered_map));
                             }
                         } else {
-                            obj.insert(field.to_string(), val.clone());
+                            // Unexpected non-object — sanitize defensively.
+                            let json =
+                                serde_json::to_string(val).unwrap_or_else(|_| val.to_string());
+                            obj.insert(
+                                field.to_string(),
+                                Value::String(sanitize_for_prompt(&json)),
+                            );
                         }
                     } else if PEER_CONTROLLED_FIELDS.contains(&field) {
                         // Sanitize peer-controlled string values to prevent
