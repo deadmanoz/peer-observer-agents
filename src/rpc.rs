@@ -355,20 +355,7 @@ fn peer_info_fields_for_alert(alertname: &str) -> Vec<&'static str> {
     }
 }
 
-/// Sanitize a string value for safe embedding in XML-tagged prompt sections.
-/// Escapes `&`, `<`, `>` to prevent boundary injection (e.g., `</rpc-data>`).
-fn sanitize_for_prompt(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => result.push_str("&amp;"),
-            '<' => result.push_str("&lt;"),
-            '>' => result.push_str("&gt;"),
-            _ => result.push(ch),
-        }
-    }
-    result
-}
+use crate::prompt::sanitize as sanitize_for_prompt;
 
 /// Peer-controlled string fields that must be sanitized before prompt embedding.
 /// When adding new fields to `peer_info_fields_for_alert`, check whether the
@@ -376,7 +363,7 @@ fn sanitize_for_prompt(input: &str) -> String {
 /// - `addr` — remote address reported by the peer
 /// - `subver` — user agent string, fully peer-controlled
 /// - `addrlocal` — local address as perceived by the remote peer (not currently used)
-const PEER_CONTROLLED_FIELDS: &[&str] = &["addr", "subver"];
+const PEER_CONTROLLED_FIELDS: &[&str] = &["addr", "addrlocal", "subver"];
 
 /// Filter a getpeerinfo JSON array to only the specified fields per peer.
 /// For `bytesrecv_per_msg` and `bytessent_per_msg`, only the keys relevant
