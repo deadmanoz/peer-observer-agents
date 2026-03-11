@@ -105,11 +105,12 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     let s_dashboard = sanitize(dashboard);
     let s_runbook = sanitize(runbook);
     let s_prior_context = sanitize(prior_context);
-    // rpc.rs sanitizes at the source: peer-controlled fields (addr, subver,
-    // addrlocal) via filter_peer_info, and non-getpeerinfo responses in full
-    // via filter_rpc_response. Do NOT sanitize again here — it would
-    // double-encode the already-escaped content.
-    let s_rpc_context = rpc_context;
+    // rpc.rs has already sanitized rpc_context at the appropriate granularity:
+    // peer-controlled string fields (addr, subver) are sanitized per-field in
+    // filter_peer_info; other RPC blobs are sanitized wholesale in
+    // filter_rpc_response. Sanitizing again here would double-encode entities
+    // (e.g. &amp; → &amp;amp;), corrupting the data Claude sees.
+    let rpc_context_presanitized = rpc_context;
 
     let dashboard_line = if s_dashboard.is_empty() {
         String::new()
@@ -132,7 +133,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     };
 
     let rpc_ts = rpc_fetched_at.unwrap_or(now);
-    let rpc_section = if s_rpc_context.is_empty() {
+    let rpc_section = if rpc_context_presanitized.is_empty() {
         String::new()
     } else {
         format!(
@@ -140,7 +141,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
              The following data was pre-fetched from the Bitcoin Core node via RPC.\n\
              Use it to identify specific peers, confirm node state, or correlate with\n\
              Prometheus metrics. For current values, use the Prometheus MCP tools.\n\n\
-             <rpc-data>\n{s_rpc_context}\n</rpc-data>\n"
+             <rpc-data>\n{rpc_context_presanitized}\n</rpc-data>\n"
         )
     };
 
