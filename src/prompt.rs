@@ -318,8 +318,10 @@ immediately — skip the remaining investigation steps. Your summary must includ
 peak/trough value, the threshold, and that it self-resolved. For scope, state that the \
 check was limited to {s_host} only and that cross-host comparison was skipped due to \
 self-resolution. You still need valid JSON with non-empty summary/cause/scope and 2-4 \
-evidence items. If the anomaly is still active (level is NOT {condition}), proceed to step 1.\n",
+evidence items. If the anomaly is still active (level is NOT {condition}), proceed to step 1. \
+(Use the ±30 min window around {started} for range queries.)\n",
             anomaly_name = spec.anomaly_name,
+            started = started,
         )
     });
 
@@ -1290,6 +1292,20 @@ mod tests {
                 .count(),
             1,
             "fast-path preamble should be a single line"
+        );
+        // Also verify the preamble isn't truncated — a valid preamble contains
+        // the full instruction text (anomaly name, host, band metric, conditions,
+        // time window). If a raw-string regression splits it, the first line would
+        // be much shorter than the full instruction.
+        let preamble_line = prompt
+            .lines()
+            .find(|l| l.contains("FAST-PATH CHECK"))
+            .unwrap();
+        assert!(
+            preamble_line.len() > 400,
+            "fast-path preamble line is suspiciously short ({} chars); \
+             likely split by a raw-string regression",
+            preamble_line.len()
         );
     }
 
