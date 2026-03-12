@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful fallback: raw text posted when Claude output fails structured JSON parsing
 - HTML stripping for prior annotation context injected into investigation prompts
 - Pipe-delimited single-line structured log format with field sanitization
+- Fast-path self-resolution check for anomaly-band alerts: Claude checks current level vs band before full investigation and short-circuits to a brief benign annotation when the anomaly has already resolved
 
 ### Changed
 
