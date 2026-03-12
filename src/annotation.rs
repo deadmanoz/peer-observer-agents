@@ -39,7 +39,6 @@ impl fmt::Display for Verdict {
 
 /// Structured annotation output from Claude, parsed from JSON.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct StructuredAnnotation {
     pub(crate) verdict: Verdict,
     /// Specific operator action. Required for `action_required`, optional for
@@ -191,16 +190,31 @@ pub(crate) fn render_annotation_plaintext(ann: &StructuredAnnotation) -> String 
 
 /// Strip HTML tags and entities produced by `render_annotation_html` for use in prompts.
 /// Only handles the specific markup we generate — not a general-purpose HTML stripper.
+///
+/// Entity unescaping is only applied when the input is a structured annotation
+/// (detected by `<b>VERDICT:</b>` marker). Fallback annotations are stored as
+/// html_escape'd plain text — unescaping those would decode boundary strings like
+/// `&lt;/alert-context-data&gt;` back to `</alert-context-data>`, breaking the
+/// XML fence in the next investigation prompt.
 pub(crate) fn strip_annotation_html(html: &str) -> String {
-    // Entity unescaping: &amp; MUST be last to avoid double-decoding.
-    // If done first, &amp;lt; → &lt; → < (incorrect double-decode).
-    html.replace("<b>", "")
+    let is_structured = html.contains("<b>VERDICT:</b>");
+
+    let stripped = html
+        .replace("<b>", "")
         .replace("</b>", "")
         .replace("<br>", "\n")
-        .replace("&bull;", "-")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
+        .replace("&bull;", "-");
+
+    if is_structured {
+        // Only unescape entities for structured HTML we produced.
+        // &amp; MUST be last to avoid double-decoding.
+        stripped
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+    } else {
+        stripped
+    }
 }
 
 #[cfg(test)]
@@ -586,17 +600,29 @@ mod tests {
     }
 
     #[test]
-    fn strip_html_unescapes_entities() {
-        let stripped = strip_annotation_html("rate &lt; 10 &amp; normal &gt; 5");
-        assert_eq!(stripped, "rate < 10 & normal > 5");
+    fn strip_html_unescapes_entities_for_structured() {
+        // Entity unescaping only applies to structured HTML (has <b>VERDICT:</b> marker)
+        let structured = "<b>VERDICT:</b> BENIGN<br>rate &lt; 10 &amp; normal &gt; 5";
+        let stripped = strip_annotation_html(structured);
+        assert!(stripped.contains("rate < 10 & normal > 5"));
+    }
+
+    #[test]
+    fn strip_html_preserves_entities_for_fallback() {
+        // Fallback (non-structured) text must NOT have entities unescaped
+        // to prevent XML fence breakout in prompt injection
+        let fallback = "rate &lt; 10 &amp; normal &gt; 5";
+        let stripped = strip_annotation_html(fallback);
+        assert_eq!(stripped, "rate &lt; 10 &amp; normal &gt; 5");
     }
 
     #[test]
     fn strip_html_no_double_decode() {
         // Input containing a literal "&lt;" that was HTML-escaped to "&amp;lt;"
-        // Must NOT double-decode to "<" — should stop at "&lt;"
-        let stripped = strip_annotation_html("value &amp;lt; threshold");
-        assert_eq!(stripped, "value &lt; threshold");
+        // in structured output — must stop at "&lt;", not decode to "<"
+        let structured = "<b>VERDICT:</b> BENIGN<br>value &amp;lt; threshold";
+        let stripped = strip_annotation_html(structured);
+        assert!(stripped.contains("value &lt; threshold"));
     }
 
     #[test]
