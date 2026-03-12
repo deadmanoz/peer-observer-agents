@@ -87,7 +87,7 @@ fn sanitize_promql_label(input: &str) -> String {
         match ch {
             '\\' => result.push_str(r"\\"),
             '"' => result.push_str(r#"\""#),
-            '\n' | '\r' | '\t' | '\0' => {} // strip control characters
+            c if c.is_ascii_control() => {} // strip all ASCII control characters
             _ => result.push(ch),
         }
     }
@@ -141,6 +141,11 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     };
 
     let now = Utc::now();
+    // Pass raw `host`, not `s_host`: investigation_instructions applies both
+    // sanitize() (for prompt text) and sanitize_promql_label() (for PromQL)
+    // internally. Passing an already-XML-sanitized value would cause
+    // double-encoding in both paths (e.g., `&amp;` → `&amp;amp;` in text,
+    // and `foo&amp;bar` used as PromQL label instead of `foo&bar`).
     let investigation = investigation_instructions(alertname, category, host, started);
 
     let prior_section = if s_prior_context.is_empty() {
@@ -1206,6 +1211,9 @@ mod tests {
         assert_eq!(sanitize_promql_label("line\nbreak"), "linebreak");
         assert_eq!(sanitize_promql_label("tab\there"), "tabhere");
         assert_eq!(sanitize_promql_label("null\0here"), "nullhere");
+        // All ASCII control chars stripped (U+0001–U+001F, U+007F)
+        assert_eq!(sanitize_promql_label("bell\x07here"), "bellhere");
+        assert_eq!(sanitize_promql_label("del\x7fhere"), "delhere");
         assert_eq!(sanitize_promql_label(""), "");
     }
 
