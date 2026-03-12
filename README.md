@@ -28,7 +28,7 @@ Alertmanager webhook
 1. Alertmanager sends a webhook to `POST /webhook`
 2. For each firing alert, the agent calls Claude Code CLI with a Prometheus MCP server
 3. Claude autonomously queries Prometheus — discovering metrics, drilling into per-peer data, correlating across hosts, and identifying root causes
-4. Posts the investigation findings as a Grafana annotation with tags `[ai-annotation, alertname, host]`
+4. Posts the investigation findings as a structured Grafana annotation with tags `[ai-annotation, alertname, host, verdict]` where verdict is `benign`, `investigate`, or `action_required` (verdict tag omitted when structured parsing fails and raw text is posted as fallback)
 5. Logs telemetry with a stable [correlation ID](docs/telemetry.md) for end-to-end tracing
 
 ### Configuration

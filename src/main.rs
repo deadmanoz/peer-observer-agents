@@ -1,6 +1,11 @@
+mod annotation;
 mod prompt;
 mod rpc;
 
+use crate::annotation::{
+    html_escape, parse_structured_annotation, render_annotation_html, render_annotation_plaintext,
+    sanitize_log_field, strip_annotation_html, Verdict,
+};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
@@ -111,6 +116,25 @@ impl fmt::Display for AlertId {
             self.started.format("%Y%m%dT%H%M%SZ")
         )
     }
+}
+
+/// Build the stable tag set used for idempotency checks.
+/// Verdict is NOT included — it may differ between retries (fallback vs structured).
+fn build_idempotency_tags(aid: &AlertId) -> Vec<String> {
+    vec![
+        "ai-annotation".to_string(),
+        aid.alertname.clone(),
+        aid.host.clone(),
+    ]
+}
+
+/// Build the full tag set posted to Grafana (idempotency tags + verdict).
+fn build_annotation_tags(aid: &AlertId, verdict: Option<&Verdict>) -> Vec<String> {
+    let mut tags = build_idempotency_tags(aid);
+    if let Some(v) = verdict {
+        tags.push(v.as_tag().to_string());
+    }
+    tags
 }
 
 #[tokio::main]
@@ -279,10 +303,30 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
         .acquire()
         .await
         .context("investigation semaphore closed")?;
-    let explanation = call_claude(state, alert, aid).await?;
-    post_grafana_annotation(state, alert, aid, &explanation).await?;
-    append_log(state, alert, &aid.alertname, &explanation).await;
-    info!(alert_id = %aid, "annotation posted successfully");
+    let raw_explanation = call_claude(state, alert, aid).await?;
+
+    match parse_structured_annotation(&raw_explanation) {
+        Ok(ann) => {
+            let html = render_annotation_html(&ann);
+            let log_text = render_annotation_plaintext(&ann);
+            post_grafana_annotation(state, alert, aid, &html, Some(&ann.verdict)).await?;
+            append_log(state, alert, &aid.alertname, &log_text).await;
+            info!(alert_id = %aid, verdict = %ann.verdict, "annotation posted successfully");
+        }
+        Err(e) => {
+            warn!(
+                alert_id = %aid,
+                error = %e,
+                "failed to parse structured annotation, using raw text"
+            );
+            let escaped = html_escape(&raw_explanation);
+            post_grafana_annotation(state, alert, aid, &escaped, None).await?;
+            let sanitized = sanitize_log_field(&raw_explanation);
+            append_log(state, alert, &aid.alertname, &sanitized).await;
+            info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
+        }
+    }
+
     Ok(())
 }
 
@@ -295,7 +339,9 @@ async fn append_log(state: &AppState, alert: &Alert, alertname: &str, explanatio
         .get("host")
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
-    let line = format_log_line(&alert.starts_at, alertname, &host, explanation);
+    let safe_alertname = sanitize_log_field(alertname);
+    let safe_host = sanitize_log_field(&host);
+    let line = format_log_line(&alert.starts_at, &safe_alertname, &safe_host, explanation);
     match OpenOptions::new()
         .create(true)
         .append(true)
@@ -373,7 +419,11 @@ fn format_prior_context(recent: &[GrafanaAnnotationResponse]) -> String {
             .map(|t| t.format("%H:%M:%S UTC").to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let tags = ann.tags.join(", ");
-        ctx.push_str(&format!("### [{tags}] at {ts}\n{}\n\n", ann.text));
+        // Strip HTML tags from prior annotations so Claude sees clean structured text.
+        // Prior annotations may be HTML (from structured format) or plain text (from
+        // raw fallback) — strip_annotation_html handles both safely.
+        let clean_text = strip_annotation_html(&ann.text);
+        ctx.push_str(&format!("### [{tags}] at {ts}\n{clean_text}\n\n"));
     }
     ctx
 }
@@ -613,25 +663,26 @@ async fn post_grafana_annotation(
     alert: &Alert,
     aid: &AlertId,
     text: &str,
+    verdict: Option<&Verdict>,
 ) -> Result<()> {
     let time_ms = alert.starts_at.timestamp_millis();
     let time_end_ms = compute_annotation_time_end(time_ms, alert.ends_at);
 
-    let tags = vec![
-        "ai-annotation".to_string(),
-        aid.alertname.clone(),
-        aid.host.clone(),
-    ];
+    // Idempotency key: stable 3-tag set. Verdict is NOT part of the key so that
+    // a retry where one attempt falls back to raw text and another succeeds with
+    // structured output will still match as a duplicate.
+    let key_tags = build_idempotency_tags(aid);
 
-    // Idempotency: check if an annotation already exists for this alert+host+time.
-    // This prevents duplicates when Alertmanager retries a mixed-success batch.
-    if annotation_exists(state, &tags, time_ms).await {
+    if annotation_exists(state, &key_tags, time_ms).await {
         info!(
             alert_id = %aid,
             "annotation already exists, skipping duplicate post"
         );
         return Ok(());
     }
+
+    // Posted tags: key tags + verdict (if structured parsing succeeded).
+    let tags = build_annotation_tags(aid, verdict);
 
     let annotation = GrafanaAnnotation {
         time: time_ms,
@@ -1105,5 +1156,68 @@ mod tests {
         };
         let aid = AlertId::from_alert(&alert);
         assert_eq!(aid.to_string(), ":unknown:20250101T000000Z");
+    }
+
+    // ── Tag building (idempotency split) ──────────────────────────────
+
+    fn test_aid() -> AlertId {
+        AlertId {
+            alertname: "TestAlert".into(),
+            host: "bitcoin-03".into(),
+            started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn idempotency_tags_are_stable_three_element() {
+        let tags = build_idempotency_tags(&test_aid());
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags[0], "ai-annotation");
+        assert_eq!(tags[1], "TestAlert");
+        assert_eq!(tags[2], "bitcoin-03");
+    }
+
+    #[test]
+    fn annotation_tags_include_verdict() {
+        let tags = build_annotation_tags(&test_aid(), Some(&Verdict::Benign));
+        assert_eq!(tags.len(), 4);
+        assert_eq!(tags[3], "benign");
+
+        let tags = build_annotation_tags(&test_aid(), Some(&Verdict::ActionRequired));
+        assert_eq!(tags[3], "action_required");
+    }
+
+    #[test]
+    fn annotation_tags_without_verdict_match_idempotency() {
+        let key = build_idempotency_tags(&test_aid());
+        let posted = build_annotation_tags(&test_aid(), None);
+        assert_eq!(key, posted);
+    }
+
+    #[test]
+    fn annotation_tags_superset_of_idempotency_tags() {
+        let key = build_idempotency_tags(&test_aid());
+        let posted = build_annotation_tags(&test_aid(), Some(&Verdict::Investigate));
+        // First 3 elements must match
+        assert_eq!(&posted[..3], &key[..]);
+        assert_eq!(posted.len(), key.len() + 1);
+    }
+
+    // ── Prior context HTML stripping ──────────────────────────────────
+
+    #[test]
+    fn format_prior_context_strips_html() {
+        let annotations = vec![GrafanaAnnotationResponse {
+            tags: vec!["ai-annotation".into(), "TestAlert".into()],
+            text: "<b>VERDICT:</b> BENIGN<br><b>SUMMARY:</b> test".into(),
+            time: 1_718_449_200_000,
+        }];
+        let ctx = format_prior_context(&annotations);
+        assert!(
+            !ctx.contains("<b>"),
+            "prior context should not contain HTML tags"
+        );
+        assert!(ctx.contains("VERDICT:"));
+        assert!(ctx.contains("SUMMARY:"));
     }
 }
