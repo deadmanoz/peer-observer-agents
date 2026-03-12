@@ -79,15 +79,16 @@ pub(crate) fn sanitize(input: &str) -> String {
 
 /// Sanitize a value for safe embedding inside a PromQL label selector string
 /// (i.e., inside double quotes: `{label="VALUE"}`). Escapes `\` and `"` to
-/// prevent selector injection, and strips ASCII control characters (U+0000–U+001F,
-/// U+007F) and C1 control codes (U+0080–U+009F) that could break query parsing
-/// or silently cause empty results.
+/// prevent selector injection, strips ASCII control characters (U+0000–U+001F,
+/// U+007F), C1 control codes (U+0080–U+009F), and backticks (which would break
+/// the markdown code spans wrapping PromQL queries in the investigation prompt).
 fn sanitize_promql_label(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
             '\\' => result.push_str(r"\\"),
             '"' => result.push_str(r#"\""#),
+            '`' => {} // strip: would break markdown code spans wrapping PromQL in the prompt
             c if c.is_ascii_control() || ('\u{0080}'..='\u{009F}').contains(&c) => {} // strip ASCII and C1 control characters
             _ => result.push(ch),
         }
@@ -1229,6 +1230,8 @@ mod tests {
         assert_eq!(sanitize_promql_label("del\x7fhere"), "delhere");
         // C1 control codes stripped (U+0080–U+009F)
         assert_eq!(sanitize_promql_label("c1\u{0085}here"), "c1here");
+        // Backticks stripped (would break markdown code spans in prompt)
+        assert_eq!(sanitize_promql_label("host`name"), "hostname");
         assert_eq!(sanitize_promql_label(""), "");
     }
 
