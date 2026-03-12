@@ -289,10 +289,13 @@ fn investigation_instructions(
         };
 
         format!(
-            "0. FAST-PATH CHECK: Query \
+            "0. FAST-PATH CHECK: Use `execute_query` (not a range query) to get the \
+current instantaneous values for \
 `peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\",host=\"{pq_host}\"}}` and \
 `peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\",host=\"{pq_host}\"}}`. \
-If either query returns empty data, skip this check and proceed to step 1. \
+If either query returns empty data (the band metric may not carry these labels), \
+try without the host label, then without anomaly_name. If still empty, skip this \
+check and proceed to step 1. \
 If the current level is {condition}, {resolved_when}. In that case, use a range query to \
 find the peak/trough value and approximate duration, then output a benign annotation \
 immediately — skip the remaining investigation steps. Your summary must include the \
@@ -1193,9 +1196,9 @@ mod tests {
             prompt.contains(r#"upper_band{anomaly_name="addr_message_rate",host="vps-prod-01"}"#),
             "band query should include host selector"
         );
-        // Empty-data fallback
+        // Empty-data fallback with label degradation
         assert!(
-            prompt.contains("returns empty data, skip this check"),
+            prompt.contains("returns empty data"),
             "fast-path should have empty-data fallback instruction"
         );
     }
