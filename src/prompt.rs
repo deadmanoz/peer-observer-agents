@@ -526,6 +526,13 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
                 fast_path_preamble.is_none(),
                 "fast_path_spec returned Some for {alertname} but no steps arm exists"
             );
+            if fast_path_preamble.is_some() {
+                tracing::warn!(
+                    alertname,
+                    "fast_path_spec returned Some but no steps arm exists; \
+                     fast-path preamble discarded"
+                );
+            }
             return format!("{}\n\n{}", category_instructions(category), query_tip);
         }
     };
@@ -1345,11 +1352,12 @@ mod tests {
                 );
             }
         }
-        // Sanity check: we expect at least 5 fast-path alerts. If this drops,
-        // someone removed a fast_path_spec entry without updating this test.
-        assert!(
-            fast_path_count >= 5,
-            "expected at least 5 fast-path alerts, found {fast_path_count}"
+        // Exact count: forces update when fast_path_spec gains or loses entries,
+        // ensuring the all_alerts list stays complete.
+        assert_eq!(
+            fast_path_count, 5,
+            "expected exactly 5 fast-path alerts, found {fast_path_count}; \
+             update all_alerts if fast_path_spec changed"
         );
     }
 }
