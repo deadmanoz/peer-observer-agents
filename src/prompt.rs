@@ -1338,6 +1338,14 @@ mod tests {
             "PeerObserverHighCPU",
             "PeerObserverAnomalyDetectionDown",
         ];
+        // Guard against all_alerts becoming stale when new alerts are added
+        // to investigation_instructions. If the steps match grows but
+        // all_alerts doesn't, this assertion fires.
+        assert_eq!(
+            all_alerts.len(),
+            21,
+            "all_alerts is stale; update it when adding new alert match arms"
+        );
         let mut fast_path_count = 0;
         for alert in &all_alerts {
             if fast_path_spec(alert).is_some() {
@@ -1352,8 +1360,7 @@ mod tests {
                 );
             }
         }
-        // Exact count: forces update when fast_path_spec gains or loses entries,
-        // ensuring the all_alerts list stays complete.
+        // Exact count: forces update when fast_path_spec gains or loses entries.
         assert_eq!(
             fast_path_count, 5,
             "expected exactly 5 fast-path alerts, found {fast_path_count}; \
