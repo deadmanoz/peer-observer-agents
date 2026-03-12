@@ -1367,8 +1367,9 @@ mod tests {
         // Prevent entries from being silently removed from all_alerts.
         // NOTE: this does NOT auto-detect new arms added to investigation_instructions —
         // if you add a new alert arm in production code, you must also add it here
-        // and update the count. The fast_path_count assertion below catches
-        // fast_path_spec divergence.
+        // and update the count. Similarly, fast_path_count only counts entries already
+        // in all_alerts — a new fast_path_spec entry NOT listed here won't affect the
+        // count and will be missed by the sync check below.
         assert_eq!(
             all_alerts.len(),
             21,
