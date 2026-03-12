@@ -120,10 +120,10 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 /// code fences, preambles, or trailing commentary that Claude may add despite
 /// the strict prompt instruction.
 pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
-    let ann: StructuredAnnotation = serde_json::from_str(raw)
-        .or_else(|_| {
+    let mut ann: StructuredAnnotation = serde_json::from_str(raw)
+        .or_else(|first_err| {
             extract_json_object(raw)
-                .ok_or_else(|| anyhow::anyhow!("no JSON object found in Claude output"))
+                .ok_or_else(|| anyhow::anyhow!("{first_err}"))
                 .and_then(|json_str| {
                     serde_json::from_str(json_str)
                         .context("extracted JSON object failed to deserialize")
@@ -131,6 +131,11 @@ pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotat
         })
         .context("Claude output is not valid StructuredAnnotation JSON")?;
     validate_structured_annotation(&ann)?;
+    // Normalize benign action to None so consumers don't need to re-filter
+    // empty string / "none" variants that passed validation.
+    if ann.verdict == Verdict::Benign {
+        ann.action = None;
+    }
     Ok(ann)
 }
 
@@ -541,6 +546,8 @@ mod tests {
         }"#;
         let ann = parse_structured_annotation(json).unwrap();
         assert_eq!(ann.verdict, Verdict::Benign);
+        // Normalized to None after parsing
+        assert!(ann.action.is_none());
     }
 
     #[test]
@@ -553,6 +560,8 @@ mod tests {
         }"#;
         let ann = parse_structured_annotation(json).unwrap();
         assert_eq!(ann.verdict, Verdict::Benign);
+        // Normalized to None after parsing
+        assert!(ann.action.is_none());
     }
 
     #[test]
