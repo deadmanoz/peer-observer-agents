@@ -105,8 +105,8 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
         Verdict::ActionRequired => {
             let action = ann.action.as_deref().unwrap_or("");
             ensure!(
-                !action.trim().is_empty(),
-                "action_required verdict must have a non-empty action"
+                !action.trim().is_empty() && !action.trim().eq_ignore_ascii_case("none"),
+                "action_required verdict must have a non-empty, non-'none' action"
             );
         }
     }
@@ -122,15 +122,42 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
     let ann: StructuredAnnotation = serde_json::from_str(raw)
         .or_else(|_| {
-            let json_str = raw
-                .find('{')
-                .and_then(|s| raw.rfind('}').map(|e| &raw[s..=e]))
-                .unwrap_or(raw);
+            let json_str = extract_json_object(raw).unwrap_or(raw);
             serde_json::from_str(json_str)
         })
         .context("Claude output is not valid StructuredAnnotation JSON")?;
     validate_structured_annotation(&ann)?;
     Ok(ann)
+}
+
+/// Extract the first top-level JSON object from a string by counting balanced braces.
+/// Returns the slice from the first `{` to its matching `}`, ignoring braces inside
+/// JSON string literals.
+fn extract_json_object(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, ch) in s[start..].char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..=start + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Escape text for safe inclusion in HTML annotation content.
@@ -374,6 +401,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_extracts_json_ignoring_trailing_braces() {
+        let wrapped = format!(
+            "{}\nNote: the adaptive band formula uses {{band_factor}}.",
+            benign_json()
+        );
+        let ann = parse_structured_annotation(&wrapped).unwrap();
+        assert_eq!(ann.verdict, Verdict::Benign);
+    }
+
+    #[test]
     fn parse_fails_on_invalid_json() {
         assert!(parse_structured_annotation("not json").is_err());
     }
@@ -510,6 +547,17 @@ mod tests {
         let json = r#"{
             "verdict": "action_required",
             "action": "",
+            "summary": "test", "cause": "test", "scope": "test",
+            "evidence": ["a", "b"]
+        }"#;
+        assert!(parse_structured_annotation(json).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_action_required_with_none_action() {
+        let json = r#"{
+            "verdict": "action_required",
+            "action": "none",
             "summary": "test", "cause": "test", "scope": "test",
             "evidence": ["a", "b"]
         }"#;
