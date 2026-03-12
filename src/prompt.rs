@@ -77,6 +77,23 @@ pub(crate) fn sanitize(input: &str) -> String {
     result
 }
 
+/// Sanitize a value for safe embedding inside a PromQL label selector string
+/// (i.e., inside double quotes: `{label="VALUE"}`). Escapes `\` and `"` to
+/// prevent selector injection, and strips newlines/carriage returns that could
+/// break query parsing.
+fn sanitize_promql_label(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' => result.push_str(r"\\"),
+            '"' => result.push_str(r#"\""#),
+            '\n' | '\r' => {} // strip newlines
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
 pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     let AlertContext {
         alertname,
@@ -247,10 +264,10 @@ fn investigation_instructions(
          (use the ±30 min window around {started})."
     );
 
-    // Sanitize host for safe embedding in the prompt (not in PromQL — Prometheus
-    // handles label matching). This prevents XML boundary escapes if the host
-    // value were attacker-controlled.
+    // Sanitize host for safe embedding in prompt text (XML boundary protection).
     let s_host = sanitize(host);
+    // Separately sanitize for PromQL label selectors (escape `"` and `\`).
+    let pq_host = sanitize_promql_label(host);
 
     let fast_path_preamble = fast_path_spec(alertname).map(|spec| {
         let (band_metric, condition, resolved_when) = match spec.band {
@@ -268,8 +285,8 @@ fn investigation_instructions(
 
         format!(
             "0. FAST-PATH CHECK: Query \
-`peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\",host=\"{s_host}\"}}` and \
-`peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\",host=\"{s_host}\"}}`. \
+`peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\",host=\"{pq_host}\"}}` and \
+`peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\",host=\"{pq_host}\"}}`. \
 If either query returns empty data, skip this check and proceed to step 1. \
 If the current level is {condition}, {resolved_when}. In that case, use a range query to \
 find the peak/trough value and approximate duration, then output a benign annotation \
@@ -483,10 +500,10 @@ evidence items.\n",
 
         // Fallback: use category-based instructions for unknown alert names.
         // If fast_path_spec returned Some but no steps arm exists, the preamble
-        // would be silently discarded — catch this invariant violation in debug.
+        // would be silently discarded — catch this invariant violation at runtime.
         _ => {
-            debug_assert!(
-                fast_path_spec(alertname).is_none(),
+            assert!(
+                fast_path_preamble.is_none(),
                 "fast_path_spec returned Some for {alertname} but no steps arm exists"
             );
             return format!("{}\n\n{}", category_instructions(category), query_tip);
@@ -1173,6 +1190,36 @@ mod tests {
         assert!(
             prompt.contains("returns empty data, skip this check"),
             "fast-path should have empty-data fallback instruction"
+        );
+    }
+
+    #[test]
+    fn sanitize_promql_label_escapes_quotes_and_backslashes() {
+        assert_eq!(sanitize_promql_label(r#"normal-host"#), "normal-host");
+        assert_eq!(
+            sanitize_promql_label(r#"foo",anomaly_name="evil"#),
+            r#"foo\",anomaly_name=\"evil"#
+        );
+        assert_eq!(sanitize_promql_label(r"back\slash"), r"back\\slash");
+        assert_eq!(sanitize_promql_label("line\nbreak"), "linebreak");
+        assert_eq!(sanitize_promql_label(""), "");
+    }
+
+    #[test]
+    fn fast_path_promql_injection_is_escaped() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverAddressMessageSpike".into(),
+            host: r#"evil",anomaly_name="wrong_metric"#.into(),
+            ..default_ctx()
+        });
+        // The injected quote should be escaped, preventing label injection
+        assert!(
+            !prompt.contains(r#"anomaly_name="wrong_metric""#),
+            "PromQL injection should be escaped"
+        );
+        assert!(
+            prompt.contains(r#"host="evil\",anomaly_name=\"wrong_metric""#),
+            "escaped host should appear in PromQL"
         );
     }
 
