@@ -1279,18 +1279,17 @@ mod tests {
             alertname: "PeerObserverAddressMessageSpike".into(),
             ..default_ctx()
         });
-        // Extract the fast-path line (Step 0) from the prompt
-        let step0 = prompt
-            .lines()
-            .find(|l| l.contains("FAST-PATH CHECK"))
-            .expect("should contain FAST-PATH CHECK line");
-        // Guard against the raw-string regression (r#"..."# treats \ before
-        // newline as literal, producing "\n"/"\t"/"\r" as two-char sequences).
-        // Don't ban all backslashes — sanitize_promql_label legitimately
-        // produces \\ for hosts containing backslashes.
-        assert!(
-            !step0.contains("\\n") && !step0.contains("\\t") && !step0.contains("\\r"),
-            "fast-path preamble should not contain literal escape sequences: {step0}"
+        // Guard against the raw-string regression: if the format string were
+        // accidentally written as r#"..."#, backslash-newline continuations
+        // would become literal backslashes, splitting the preamble across lines.
+        // A valid preamble is always a single line (it ends with a single \n).
+        assert_eq!(
+            prompt
+                .lines()
+                .filter(|l| l.contains("FAST-PATH CHECK"))
+                .count(),
+            1,
+            "fast-path preamble should be a single line"
         );
     }
 
@@ -1357,7 +1356,8 @@ mod tests {
         assert_eq!(
             all_alerts.len(),
             21,
-            "all_alerts length changed; update it when adding/removing alert match arms"
+            "all_alerts is out of date — add the new alert name to this list \
+             AND update this count when adding/removing arms in investigation_instructions"
         );
         let mut fast_path_count = 0;
         for alert in &all_alerts {
