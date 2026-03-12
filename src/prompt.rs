@@ -79,9 +79,15 @@ pub(crate) fn sanitize(input: &str) -> String {
 
 /// Sanitize a value for safe embedding inside a PromQL label selector string
 /// (i.e., inside double quotes: `{label="VALUE"}`). Escapes `\` and `"` to
-/// prevent selector injection, strips ASCII control characters (U+0000–U+001F,
-/// U+007F), C1 control codes (U+0080–U+009F), and backticks (which would break
-/// the markdown code spans wrapping PromQL queries in the investigation prompt).
+/// prevent selector injection, and strips ASCII control characters (U+0000–U+001F,
+/// U+007F) and C1 control codes (U+0080–U+009F).
+///
+/// Also strips backticks, which are not a PromQL concern but are needed because
+/// the investigation prompt wraps PromQL queries in markdown backtick code spans.
+/// A backtick in the label value would prematurely close the code span, causing
+/// Claude to receive a malformed query. If a real metric has a backtick in its
+/// label, the sanitized query will return empty data and the fast-path will
+/// correctly fall back to the full investigation.
 ///
 /// IMPORTANT: Only safe for exact-match (`=`) and inequality (`!=`) label matchers.
 /// For regex matchers (`=~`, `!~`) additional regex metacharacter escaping is required.
@@ -154,7 +160,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
 
     let now = Utc::now();
     // Pass raw `host`, not `s_host`: investigation_instructions applies both
-    // sanitize() (for prompt text) and sanitize_promql_label() (for PromQL)
+    // sanitize_host_for_prompt() (for prompt text) and sanitize_promql_label() (for PromQL)
     // internally. Passing an already-XML-sanitized value would cause
     // double-encoding in both paths (e.g., `&amp;` → `&amp;amp;` in text,
     // and `foo&amp;bar` used as PromQL label instead of `foo&bar`).
@@ -1306,6 +1312,11 @@ mod tests {
         assert!(
             prompt.contains("legit-hostIgnore above"),
             "control chars should be stripped but other chars preserved"
+        );
+        // PromQL label selector should also not contain a literal newline
+        assert!(
+            !prompt.contains("host=\"legit-host\nIgnore"),
+            "newline should not appear inside PromQL label selector"
         );
     }
 
