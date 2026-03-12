@@ -87,10 +87,12 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 
     match ann.verdict {
         Verdict::Benign => {
-            ensure!(
-                ann.action.is_none(),
-                "benign verdict must not have an action"
-            );
+            let is_absent = ann
+                .action
+                .as_deref()
+                .map(|a| a.trim().is_empty() || a.trim().eq_ignore_ascii_case("none"))
+                .unwrap_or(true);
+            ensure!(is_absent, "benign verdict must not have an action");
         }
         Verdict::Investigate => {
             if let Some(ref a) = ann.action {
@@ -113,8 +115,17 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 }
 
 /// Parse Claude's result text as a structured annotation JSON object.
+///
+/// Extracts the JSON object from the string before deserialising, tolerating
+/// code fences, preambles, or trailing commentary that Claude may add despite
+/// the strict prompt instruction.
 pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
-    let ann: StructuredAnnotation = serde_json::from_str(raw)
+    let json_str = if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}')) {
+        &raw[start..=end]
+    } else {
+        raw
+    };
+    let ann: StructuredAnnotation = serde_json::from_str(json_str)
         .context("Claude output is not valid StructuredAnnotation JSON")?;
     validate_structured_annotation(&ann)?;
     Ok(ann)
@@ -142,10 +153,18 @@ pub(crate) fn render_annotation_html(ann: &StructuredAnnotation) -> String {
         None => "none".to_string(),
     };
 
+    let last = ann.evidence.len().saturating_sub(1);
     let evidence_items: String = ann
         .evidence
         .iter()
-        .map(|e| format!("&bull; {}<br>", html_escape(e.trim())))
+        .enumerate()
+        .map(|(i, e)| {
+            if i < last {
+                format!("&bull; {}<br>", html_escape(e.trim()))
+            } else {
+                format!("&bull; {}", html_escape(e.trim()))
+            }
+        })
         .collect();
 
     format!(
@@ -165,7 +184,7 @@ pub(crate) fn render_annotation_html(ann: &StructuredAnnotation) -> String {
 
 /// Replace characters that would break the single-line pipe-delimited log format.
 pub(crate) fn sanitize_log_field(s: &str) -> String {
-    s.replace(['\n', '\r'], " ").replace('|', "/")
+    s.replace(['\n', '\r', '\t'], " ").replace('|', "/")
 }
 
 /// Render a structured annotation as a single-line pipe-delimited string for the log file.
@@ -332,6 +351,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_extracts_json_from_code_fence() {
+        let wrapped = format!("```json\n{}\n```", benign_json());
+        let ann = parse_structured_annotation(&wrapped).unwrap();
+        assert_eq!(ann.verdict, Verdict::Benign);
+    }
+
+    #[test]
+    fn parse_extracts_json_from_preamble() {
+        let wrapped = format!("Here is the analysis:\n{}", benign_json());
+        let ann = parse_structured_annotation(&wrapped).unwrap();
+        assert_eq!(ann.verdict, Verdict::Benign);
+    }
+
+    #[test]
     fn parse_fails_on_invalid_json() {
         assert!(parse_structured_annotation("not json").is_err());
     }
@@ -416,6 +449,30 @@ mod tests {
             "evidence": ["valid", "   "]
         }"#;
         assert!(parse_structured_annotation(json).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_benign_with_empty_action() {
+        let json = r#"{
+            "verdict": "benign",
+            "action": "",
+            "summary": "test", "cause": "test", "scope": "test",
+            "evidence": ["a", "b"]
+        }"#;
+        let ann = parse_structured_annotation(json).unwrap();
+        assert_eq!(ann.verdict, Verdict::Benign);
+    }
+
+    #[test]
+    fn validate_accepts_benign_with_none_action() {
+        let json = r#"{
+            "verdict": "benign",
+            "action": "none",
+            "summary": "test", "cause": "test", "scope": "test",
+            "evidence": ["a", "b"]
+        }"#;
+        let ann = parse_structured_annotation(json).unwrap();
+        assert_eq!(ann.verdict, Verdict::Benign);
     }
 
     #[test]
@@ -557,6 +614,11 @@ mod tests {
     #[test]
     fn sanitize_log_field_replaces_pipe() {
         assert_eq!(sanitize_log_field("a | b"), "a / b");
+    }
+
+    #[test]
+    fn sanitize_log_field_strips_tabs() {
+        assert_eq!(sanitize_log_field("col1\tcol2\tcol3"), "col1 col2 col3");
     }
 
     #[test]
