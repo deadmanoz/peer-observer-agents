@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-12
+
 ### Added
 
 - Pre-fetch Bitcoin Core RPC data (getpeerinfo, getblockchaininfo, getmempoolinfo, etc.) over WireGuard before Claude investigation, giving the agent per-peer IP attribution and node state context
@@ -48,5 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow: fmt, clippy, test, nix build
 - Comprehensive documentation (deployment, testing, telemetry)
 
-[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/peer-observer/peer-observer-agents/releases/tag/v0.2.0
