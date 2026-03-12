@@ -1338,13 +1338,15 @@ mod tests {
             "PeerObserverHighCPU",
             "PeerObserverAnomalyDetectionDown",
         ];
-        // Guard against all_alerts becoming stale when new alerts are added
-        // to investigation_instructions. If the steps match grows but
-        // all_alerts doesn't, this assertion fires.
+        // Prevent entries from being silently removed from all_alerts.
+        // NOTE: this does NOT auto-detect new arms added to investigation_instructions —
+        // if you add a new alert arm in production code, you must also add it here
+        // and update the count. The fast_path_count assertion below catches
+        // fast_path_spec divergence.
         assert_eq!(
             all_alerts.len(),
             21,
-            "all_alerts is stale; update it when adding new alert match arms"
+            "all_alerts length changed; update it when adding/removing alert match arms"
         );
         let mut fast_path_count = 0;
         for alert in &all_alerts {
