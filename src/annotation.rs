@@ -120,12 +120,14 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 /// code fences, preambles, or trailing commentary that Claude may add despite
 /// the strict prompt instruction.
 pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
-    let json_str = if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}')) {
-        &raw[start..=end]
-    } else {
-        raw
-    };
-    let ann: StructuredAnnotation = serde_json::from_str(json_str)
+    let ann: StructuredAnnotation = serde_json::from_str(raw)
+        .or_else(|_| {
+            let json_str = raw
+                .find('{')
+                .and_then(|s| raw.rfind('}').map(|e| &raw[s..=e]))
+                .unwrap_or(raw);
+            serde_json::from_str(json_str)
+        })
         .context("Claude output is not valid StructuredAnnotation JSON")?;
     validate_structured_annotation(&ann)?;
     Ok(ann)
@@ -149,8 +151,10 @@ pub(crate) fn render_annotation_html(ann: &StructuredAnnotation) -> String {
     let verdict_display = ann.verdict.display_label();
 
     let action_display = match &ann.action {
-        Some(a) => html_escape(a.trim()),
-        None => "none".to_string(),
+        Some(a) if !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("none") => {
+            html_escape(a.trim())
+        }
+        _ => "none".to_string(),
     };
 
     let last = ann.evidence.len().saturating_sub(1);
@@ -189,7 +193,12 @@ pub(crate) fn sanitize_log_field(s: &str) -> String {
 
 /// Render a structured annotation as a single-line pipe-delimited string for the log file.
 pub(crate) fn render_annotation_plaintext(ann: &StructuredAnnotation) -> String {
-    let action = ann.action.as_deref().unwrap_or("none");
+    let action = ann
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("none"))
+        .unwrap_or("none");
     let evidence: String = ann
         .evidence
         .iter()
