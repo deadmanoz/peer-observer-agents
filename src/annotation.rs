@@ -136,14 +136,17 @@ pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotat
 
 /// Extract a top-level JSON object from a string by counting balanced braces.
 /// Scans all `{` positions in order and returns the first balanced object that
-/// is syntactically valid JSON, skipping small brace pairs in preamble text.
+/// deserialises as a valid `StructuredAnnotation`, skipping incidental JSON
+/// objects in preamble or commentary text.
 fn extract_json_object(s: &str) -> Option<&str> {
     let mut search_from = 0;
     while let Some(rel) = s[search_from..].find('{') {
         let start = search_from + rel;
         if let Some(slice) = find_balanced_object(s, start) {
-            // Verify this is syntactically valid JSON before returning.
-            if serde_json::from_str::<serde_json::Value>(slice).is_ok() {
+            if serde_json::from_str::<StructuredAnnotation>(slice)
+                .map(|a| validate_structured_annotation(&a).is_ok())
+                .unwrap_or(false)
+            {
                 return Some(slice);
             }
         }
