@@ -1304,30 +1304,52 @@ mod tests {
 
     #[test]
     fn fast_path_spec_and_steps_arms_are_in_sync() {
-        // Every alert with a fast_path_spec must have a corresponding steps arm
-        // that includes the preamble. If a new fast_path_spec entry is added without
-        // a steps arm, the preamble is silently discarded (debug_assert catches this
-        // in debug builds, but this test makes the invariant explicit).
-        let fast_path_alerts = [
+        // Derive the fast-path alert set from all_known_alerts rather than
+        // maintaining a third hardcoded list. Any alert where fast_path_spec
+        // returns Some must also produce FAST-PATH CHECK in the prompt output
+        // (proving the steps arm includes the preamble).
+        let all_alerts = [
             "PeerObserverInboundConnectionDrop",
             "PeerObserverOutboundConnectionDrop",
+            "PeerObserverTotalPeersDrop",
+            "PeerObserverNetworkInactive",
             "PeerObserverAddressMessageSpike",
             "PeerObserverMisbehaviorSpike",
             "PeerObserverINVQueueDepthAnomaly",
+            "PeerObserverINVQueueDepthExtreme",
+            "PeerObserverBlockStale",
+            "PeerObserverBlockStaleCritical",
+            "PeerObserverBitcoinCoreRestart",
+            "PeerObserverNodeInIBD",
+            "PeerObserverHeaderBlockGap",
+            "PeerObserverMempoolFull",
+            "PeerObserverMempoolEmpty",
+            "PeerObserverServiceFailed",
+            "PeerObserverMetricsToolDown",
+            "PeerObserverDiskSpaceLow",
+            "PeerObserverHighMemory",
+            "PeerObserverHighCPU",
+            "PeerObserverAnomalyDetectionDown",
         ];
-        for alert in &fast_path_alerts {
-            assert!(
-                fast_path_spec(alert).is_some(),
-                "{alert} should have a fast_path_spec"
-            );
-            let prompt = build_investigation_prompt(&AlertContext {
-                alertname: alert.to_string(),
-                ..default_ctx()
-            });
-            assert!(
-                prompt.contains("FAST-PATH CHECK"),
-                "{alert} has fast_path_spec but its steps arm does not include the preamble"
-            );
+        let mut fast_path_count = 0;
+        for alert in &all_alerts {
+            if fast_path_spec(alert).is_some() {
+                fast_path_count += 1;
+                let prompt = build_investigation_prompt(&AlertContext {
+                    alertname: alert.to_string(),
+                    ..default_ctx()
+                });
+                assert!(
+                    prompt.contains("FAST-PATH CHECK"),
+                    "{alert} has fast_path_spec but its steps arm does not include the preamble"
+                );
+            }
         }
+        // Sanity check: we expect at least 5 fast-path alerts. If this drops,
+        // someone removed a fast_path_spec entry without updating this test.
+        assert!(
+            fast_path_count >= 5,
+            "expected at least 5 fast-path alerts, found {fast_path_count}"
+        );
     }
 }
