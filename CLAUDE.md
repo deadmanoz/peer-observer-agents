@@ -49,16 +49,18 @@ When doing a docs update sweep, review all docs against the current source code.
 ## Key Dependencies
 
 - `axum` — HTTP server for Alertmanager webhooks
-- `reqwest` — HTTP client for Grafana API
+- `reqwest` — HTTP client for Grafana API and Bitcoin Core RPC
 - `tokio` — Async runtime + process spawning for Claude CLI
 - `serde` / `serde_json` — Alertmanager payload deserialization, Claude JSON output parsing
+- `anyhow` — Error handling and context propagation
 - `chrono` — Timestamp handling
-- `tracing` — Structured logging with telemetry fields
+- `tracing` / `tracing-subscriber` — Structured logging with telemetry fields and env-filter
 - `libc` — Process group management (`setsid`/`killpg`) for subprocess cleanup on timeout
+- `futures-util` — Concurrent RPC fan-out (`join_all`)
 
 ## Configuration
 
-All config via environment variables prefixed `ANNOTATION_AGENT_*`. See README.md for the full table.
+All config via environment variables prefixed `ANNOTATION_AGENT_*`. See [docs/deployment.md](docs/deployment.md#configuration-reference) for the full table.
 
 Required: `ANNOTATION_AGENT_GRAFANA_API_KEY`, `ANNOTATION_AGENT_MCP_CONFIG`
 
