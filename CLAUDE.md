@@ -29,6 +29,7 @@ nix build                      # Build via flake (Linux/CI)
 ## Project Structure
 
 - `src/main.rs` — HTTP server, webhook handler, Claude CLI invocation, Grafana annotation posting, idempotency, telemetry
+- `src/annotation.rs` — Structured annotation types (Verdict, StructuredAnnotation), JSON parsing/validation, HTML/plaintext rendering, log field sanitization, HTML stripping
 - `src/prompt.rs` — Alert context extraction and investigation prompt generation (per-alert and per-category instructions)
 - `src/rpc.rs` — Bitcoin Core JSON-RPC client for pre-fetching node data (getpeerinfo, getblockchaininfo, etc.) over WireGuard
 - `Cargo.toml` — Dependencies
@@ -94,3 +95,5 @@ This crate can be added as a flake input to [infra-library](https://github.com/p
 - **JSON output format**: Uses `--output-format json` to capture structured telemetry (num_turns, cost, tokens, duration, session_id).
 - **Unbounded turns**: No `--max-turns` limit — Claude investigates until it has a conclusion. The `is_error` and "Reached max turns" checks prevent posting error text as annotations.
 - **Model**: Defaults to `claude-sonnet-4-6` for fast, cost-effective investigations. Configurable via `ANNOTATION_AGENT_CLAUDE_MODEL`.
+- **Structured annotation output**: Claude outputs a JSON object with `verdict`, `action`, `summary`, `cause`, `scope`, and `evidence` fields. Rust validates the schema (enum verdict, non-empty fields, verdict-action consistency) and renders HTML for Grafana tooltips. Graceful fallback: if parsing fails, raw text is posted as-is. The verdict (`benign`/`investigate`/`action_required`) is added as a Grafana tag for dashboard filtering but is NOT part of the idempotency key to prevent duplicate annotations during retries.
+- **Grafana HTML annotations**: Annotation tooltips render HTML via DOMPurify sanitization (verified against grafana/grafana AnnotationTooltip2.tsx, 2026-03). Only safe tags used: `<b>`, `<br>`, `&bull;`. Prior annotations have HTML stripped before injection into new investigation prompts.

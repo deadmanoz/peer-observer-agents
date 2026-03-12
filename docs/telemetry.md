@@ -43,8 +43,10 @@ The agent fetches recent AI annotations from Grafana (last 1 hour, same host) an
 
 ## Log File
 
-When `ANNOTATION_AGENT_LOG_FILE` is set, each successful annotation is appended as a plain-text line:
+When `ANNOTATION_AGENT_LOG_FILE` is set, each successful annotation is appended as a single plain-text line with pipe-delimited structured fields:
 
 ```
-[2025-06-15 12:00:00 UTC] PeerObserverBlockStale on bitcoin-03 — No new block in 1 hour, likely slow block interval...
+[2025-06-15 12:00:00 UTC] PeerObserverBlockStale on bitcoin-03 — VERDICT: BENIGN | ACTION: none | SUMMARY: Slow block interval, all hosts at same height. | CAUSE: Normal mining variance. | SCOPE: multi-host (all 3 hosts at height 890421) | EVIDENCE: last_block: 47 min ago; all hosts synced at 890421
 ```
+
+If Claude's output cannot be parsed as structured JSON (graceful fallback), the raw text is logged instead.

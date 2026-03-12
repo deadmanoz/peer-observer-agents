@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable via `ANNOTATION_AGENT_RPC_HOSTS`, `ANNOTATION_AGENT_RPC_USER`, `ANNOTATION_AGENT_RPC_PASSWORD`, `ANNOTATION_AGENT_RPC_PORT`
 - Fail-fast startup validation for partial/malformed RPC configuration
 - Graceful degradation when RPC is unreachable (investigation continues with Prometheus only)
+- Structured annotation output: Claude outputs JSON with `verdict`, `action`, `summary`, `cause`, `scope`, and `evidence` fields, parsed and validated in Rust
+- Three-level verdict taxonomy (`benign`/`investigate`/`action_required`) for instant operator triage
+- HTML-formatted Grafana annotations with bold field labels for scannable tooltip rendering
+- Verdict tag added to Grafana annotation tags for dashboard filtering (not part of idempotency key)
+- Graceful fallback: raw text posted when Claude output fails structured JSON parsing
+- HTML stripping for prior annotation context injected into investigation prompts
+- Pipe-delimited single-line structured log format with field sanitization
 
 ### Changed
 
