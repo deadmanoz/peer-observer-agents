@@ -79,15 +79,16 @@ pub(crate) fn sanitize(input: &str) -> String {
 
 /// Sanitize a value for safe embedding inside a PromQL label selector string
 /// (i.e., inside double quotes: `{label="VALUE"}`). Escapes `\` and `"` to
-/// prevent selector injection, and strips control characters that could break
-/// query parsing or silently cause empty results.
+/// prevent selector injection, and strips ASCII control characters (U+0000–U+001F,
+/// U+007F) and C1 control codes (U+0080–U+009F) that could break query parsing
+/// or silently cause empty results.
 fn sanitize_promql_label(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
             '\\' => result.push_str(r"\\"),
             '"' => result.push_str(r#"\""#),
-            c if c.is_ascii_control() => {} // strip all ASCII control characters
+            c if c.is_ascii_control() || ('\u{0080}'..='\u{009F}').contains(&c) => {} // strip ASCII and C1 control characters
             _ => result.push(ch),
         }
     }
@@ -293,9 +294,7 @@ fn investigation_instructions(
 current instantaneous values for \
 `peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\",host=\"{pq_host}\"}}` and \
 `peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\",host=\"{pq_host}\"}}`. \
-If either query returns empty data (the band metric may not carry these labels), \
-try without the host label, then without anomaly_name. If still empty, skip this \
-check and proceed to step 1. \
+If either query returns empty data, skip this check and proceed to step 1. \
 If the current level is {condition}, {resolved_when}. In that case, use a range query to \
 find the peak/trough value and approximate duration, then output a benign annotation \
 immediately — skip the remaining investigation steps. Your summary must include the \
@@ -1214,9 +1213,11 @@ mod tests {
         assert_eq!(sanitize_promql_label("line\nbreak"), "linebreak");
         assert_eq!(sanitize_promql_label("tab\there"), "tabhere");
         assert_eq!(sanitize_promql_label("null\0here"), "nullhere");
-        // All ASCII control chars stripped (U+0001–U+001F, U+007F)
+        // All ASCII control chars stripped (U+0000–U+001F, U+007F)
         assert_eq!(sanitize_promql_label("bell\x07here"), "bellhere");
         assert_eq!(sanitize_promql_label("del\x7fhere"), "delhere");
+        // C1 control codes stripped (U+0080–U+009F)
+        assert_eq!(sanitize_promql_label("c1\u{0085}here"), "c1here");
         assert_eq!(sanitize_promql_label(""), "");
     }
 
