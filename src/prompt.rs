@@ -301,7 +301,7 @@ immediately — skip the remaining investigation steps. Your summary must includ
 peak/trough value, the threshold, and that it self-resolved. For scope, state that the \
 check was limited to {s_host} only and that cross-host comparison was skipped due to \
 self-resolution. You still need valid JSON with non-empty summary/cause/scope and 2-4 \
-evidence items.\n",
+evidence items. If the anomaly is still active (level is NOT {condition}), proceed to step 1.\n",
             anomaly_name = spec.anomaly_name,
         )
     });
@@ -1240,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_path_preamble_has_no_stray_backslashes() {
+    fn fast_path_preamble_has_no_stray_escape_sequences() {
         let prompt = build_investigation_prompt(&AlertContext {
             alertname: "PeerObserverAddressMessageSpike".into(),
             ..default_ctx()
@@ -1250,9 +1250,13 @@ mod tests {
             .lines()
             .find(|l| l.contains("FAST-PATH CHECK"))
             .expect("should contain FAST-PATH CHECK line");
+        // Guard against the raw-string regression (r#"..."# treats \ before
+        // newline as literal, producing "\n"/"\t"/"\r" as two-char sequences).
+        // Don't ban all backslashes — sanitize_promql_label legitimately
+        // produces \\ for hosts containing backslashes.
         assert!(
-            !step0.contains('\\'),
-            "fast-path preamble should not contain literal backslashes: {step0}"
+            !step0.contains("\\n") && !step0.contains("\\t") && !step0.contains("\\r"),
+            "fast-path preamble should not contain literal escape sequences: {step0}"
         );
     }
 }
