@@ -33,22 +33,7 @@ Alertmanager webhook
 
 ### Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ANNOTATION_AGENT_LISTEN_ADDR` | `127.0.0.1:9099` | HTTP listen address |
-| `ANNOTATION_AGENT_GRAFANA_URL` | `http://127.0.0.1:9321` | Grafana base URL |
-| `ANNOTATION_AGENT_GRAFANA_API_KEY` | (required) | Grafana service account token |
-| `ANNOTATION_AGENT_CLAUDE_BIN` | `claude` | Path to Claude CLI binary |
-| `ANNOTATION_AGENT_CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model to use for investigations |
-| `ANNOTATION_AGENT_MCP_CONFIG` | (required) | Path to MCP config JSON for Prometheus |
-| `ANNOTATION_AGENT_LOG_FILE` | (optional) | Path to append plain-text annotation log |
-| `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` | `30` | HTTP client timeout for Grafana API calls |
-| `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` | `600` | Max wall-clock time for a Claude CLI investigation |
-| `ANNOTATION_AGENT_MAX_CONCURRENT` | `4` | Max concurrent Claude investigations (minimum 1) |
-| `ANNOTATION_AGENT_RPC_HOSTS` | (optional) | JSON map of host names to WireGuard IPs for Bitcoin Core RPC pre-fetch (e.g., `{"bitcoin-03":"10.0.0.3"}`) |
-| `ANNOTATION_AGENT_RPC_USER` | `rpc-extractor` | Bitcoin Core RPC username |
-| `ANNOTATION_AGENT_RPC_PASSWORD` | (required if RPC_HOSTS set) | Bitcoin Core RPC password |
-| `ANNOTATION_AGENT_RPC_PORT` | `9000` | Bitcoin Core RPC port (via WireGuard nginx proxy) |
+All config via environment variables prefixed `ANNOTATION_AGENT_*`. Required: `ANNOTATION_AGENT_GRAFANA_API_KEY`, `ANNOTATION_AGENT_MCP_CONFIG`. See [Configuration Reference](docs/deployment.md#configuration-reference) for the full table.
 
 ### Quick Start
 
@@ -87,6 +72,6 @@ just fmt     # auto-format code
 ### Documentation
 
 - [Testing](docs/testing.md) — smoke tests, unit tests, CI
-- [Deployment](docs/deployment.md) — NixOS, security assumptions, MCP config, health endpoint
+- [Deployment](docs/deployment.md) — NixOS, configuration reference, security assumptions, MCP config, health endpoint
 - [Telemetry](docs/telemetry.md) — log correlation, structured logging fields, prior context scoping
 - [Releasing](docs/releasing.md) — versioning, changelog, release workflow

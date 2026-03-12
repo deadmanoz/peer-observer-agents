@@ -71,18 +71,21 @@ All config via environment variables prefixed `ANNOTATION_AGENT_*`:
 When `ANNOTATION_AGENT_RPC_HOSTS` is set, the agent pre-fetches relevant Bitcoin Core RPC data before invoking Claude. This provides per-peer details (IP addresses, user agents, rate-limited status) that Prometheus aggregate metrics cannot capture.
 
 The RPC pre-fetch maps each alert type to specific RPC methods:
-- **Connection/P2P/security alerts**: `getpeerinfo` (+ `getnetworkinfo` for connection alerts)
-- **Chain health alerts**: `getblockchaininfo`
-- **Mempool alerts**: `getmempoolinfo`
-- **Restart alerts**: `getblockchaininfo` + `uptime`
-- **Infrastructure/meta alerts**: no RPC pre-fetch (not Bitcoin Core related)
+- **P2P message alerts** (PeerObserverAddressMessageSpike, PeerObserverMisbehaviorSpike): `getpeerinfo`
+- **Connection alerts** (PeerObserverInboundConnectionDrop, PeerObserverOutboundConnectionDrop, PeerObserverTotalPeersDrop): `getpeerinfo` + `getnetworkinfo`
+- **Network inactive** (PeerObserverNetworkInactive): `getnetworkinfo`
+- **INV queue alerts** (PeerObserverINVQueueDepthAnomaly, PeerObserverINVQueueDepthExtreme): `getpeerinfo`
+- **Chain health alerts** (PeerObserverBlockStale, PeerObserverBlockStaleCritical, PeerObserverNodeInIBD, PeerObserverHeaderBlockGap): `getblockchaininfo`
+- **Mempool alerts** (PeerObserverMempoolFull, PeerObserverMempoolEmpty): `getmempoolinfo`
+- **Restart alerts** (PeerObserverBitcoinCoreRestart): `getblockchaininfo` + `uptime`
+- **Infrastructure/meta alerts** (PeerObserverServiceFailed, PeerObserverMetricsToolDown, PeerObserverDiskSpaceLow, PeerObserverHighMemory, PeerObserverHighCPU, PeerObserverAnomalyDetectionDown): no RPC pre-fetch
 
 RPC responses are filtered per alert type to keep token cost low (e.g., `getpeerinfo` extracts only relevant fields per peer). The filtered data is injected into the investigation prompt as a `<rpc-data>` section.
 
 **Configuration:**
 - `RPC_HOSTS` is a JSON map: `{"bitcoin-03": "10.0.0.3", "vps-dev-01": "10.0.0.4"}`
 - Host names must match the `host` label in Alertmanager alerts
-- RPC credentials use the `rpc-extractor` user (whitelisted for read-only methods in Bitcoin Core)
+- RPC credentials use the `rpc-extractor` user (configured with `-rpcwhitelist` for read-only methods)
 - If RPC is unreachable or the host is unmapped, the investigation proceeds with Prometheus data only
 
 **Startup behavior:**
