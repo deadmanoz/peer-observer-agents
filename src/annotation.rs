@@ -122,19 +122,40 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
     let ann: StructuredAnnotation = serde_json::from_str(raw)
         .or_else(|_| {
-            let json_str = extract_json_object(raw).unwrap_or(raw);
-            serde_json::from_str(json_str)
+            extract_json_object(raw)
+                .ok_or_else(|| anyhow::anyhow!("no JSON object found in Claude output"))
+                .and_then(|json_str| {
+                    serde_json::from_str(json_str)
+                        .context("extracted JSON object failed to deserialize")
+                })
         })
         .context("Claude output is not valid StructuredAnnotation JSON")?;
     validate_structured_annotation(&ann)?;
     Ok(ann)
 }
 
-/// Extract the first top-level JSON object from a string by counting balanced braces.
-/// Returns the slice from the first `{` to its matching `}`, ignoring braces inside
-/// JSON string literals.
+/// Extract a top-level JSON object from a string by counting balanced braces.
+/// Scans all `{` positions in order and returns the first balanced object that
+/// is syntactically valid JSON, skipping small brace pairs in preamble text.
 fn extract_json_object(s: &str) -> Option<&str> {
-    let start = s.find('{')?;
+    let mut search_from = 0;
+    while let Some(rel) = s[search_from..].find('{') {
+        let start = search_from + rel;
+        if let Some(slice) = find_balanced_object(s, start) {
+            // Verify this is syntactically valid JSON before returning.
+            if serde_json::from_str::<serde_json::Value>(slice).is_ok() {
+                return Some(slice);
+            }
+        }
+        search_from = start + 1;
+    }
+    None
+}
+
+/// From a given start position (which must be a `{`), walk forward counting
+/// balanced braces (skipping braces inside JSON string literals) and return
+/// the slice from `start` to the matching `}`.
+fn find_balanced_object(s: &str, start: usize) -> Option<&str> {
     let mut depth = 0i32;
     let mut in_string = false;
     let mut escape_next = false;
@@ -396,6 +417,16 @@ mod tests {
     #[test]
     fn parse_extracts_json_from_preamble() {
         let wrapped = format!("Here is the analysis:\n{}", benign_json());
+        let ann = parse_structured_annotation(&wrapped).unwrap();
+        assert_eq!(ann.verdict, Verdict::Benign);
+    }
+
+    #[test]
+    fn parse_extracts_json_skipping_preamble_braces() {
+        let wrapped = format!(
+            "Note: the adaptive band is {{upper_band}}. Analysis:\n{}",
+            benign_json()
+        );
         let ann = parse_structured_annotation(&wrapped).unwrap();
         assert_eq!(ann.verdict, Verdict::Benign);
     }
