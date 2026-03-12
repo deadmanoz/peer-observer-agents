@@ -79,15 +79,15 @@ pub(crate) fn sanitize(input: &str) -> String {
 
 /// Sanitize a value for safe embedding inside a PromQL label selector string
 /// (i.e., inside double quotes: `{label="VALUE"}`). Escapes `\` and `"` to
-/// prevent selector injection, and strips newlines/carriage returns that could
-/// break query parsing.
+/// prevent selector injection, and strips control characters that could break
+/// query parsing or silently cause empty results.
 fn sanitize_promql_label(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
             '\\' => result.push_str(r"\\"),
             '"' => result.push_str(r#"\""#),
-            '\n' | '\r' => {} // strip newlines
+            '\n' | '\r' | '\t' | '\0' => {} // strip control characters
             _ => result.push(ch),
         }
     }
@@ -500,9 +500,11 @@ evidence items.\n",
 
         // Fallback: use category-based instructions for unknown alert names.
         // If fast_path_spec returned Some but no steps arm exists, the preamble
-        // would be silently discarded — catch this invariant violation at runtime.
+        // would be silently discarded — catch this in debug/test builds. Using
+        // debug_assert (not assert) so production gracefully degrades to
+        // category instructions rather than panicking the tokio task.
         _ => {
-            assert!(
+            debug_assert!(
                 fast_path_preamble.is_none(),
                 "fast_path_spec returned Some for {alertname} but no steps arm exists"
             );
@@ -1202,6 +1204,8 @@ mod tests {
         );
         assert_eq!(sanitize_promql_label(r"back\slash"), r"back\\slash");
         assert_eq!(sanitize_promql_label("line\nbreak"), "linebreak");
+        assert_eq!(sanitize_promql_label("tab\there"), "tabhere");
+        assert_eq!(sanitize_promql_label("null\0here"), "nullhere");
         assert_eq!(sanitize_promql_label(""), "");
     }
 
