@@ -124,7 +124,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     };
 
     let now = Utc::now();
-    let investigation = investigation_instructions(alertname, category, started);
+    let investigation = investigation_instructions(alertname, category, host, started);
 
     let prior_section = if s_prior_context.is_empty() {
         String::new()
@@ -236,11 +236,21 @@ fn fast_path_spec(alertname: &str) -> Option<FastPathSpec> {
     }
 }
 
-fn investigation_instructions(alertname: &str, category: &str, started: &DateTime<Utc>) -> String {
+fn investigation_instructions(
+    alertname: &str,
+    category: &str,
+    host: &str,
+    started: &DateTime<Utc>,
+) -> String {
     let query_tip = format!(
         "Use execute_query for current values and execute_range_query for trends \
          (use the ±30 min window around {started})."
     );
+
+    // Sanitize host for safe embedding in the prompt (not in PromQL — Prometheus
+    // handles label matching). This prevents XML boundary escapes if the host
+    // value were attacker-controlled.
+    let s_host = sanitize(host);
 
     let fast_path_preamble = fast_path_spec(alertname).map(|spec| {
         let (band_metric, condition, resolved_when) = match spec.band {
@@ -257,16 +267,16 @@ fn investigation_instructions(alertname: &str, category: &str, started: &DateTim
         };
 
         format!(
-            "0. FAST-PATH CHECK: Query `peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\"}}` \
-and `peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\"}}` for the alert's host. \
-IMPORTANT: Filter both queries by the host from the Alert Details section above — do NOT \
-fast-path based on other hosts' values. If either query returns empty data, skip this check \
-and proceed to step 1. If the current level for the alert host is {condition}, {resolved_when}. \
-In that case, use a range query to find the peak/trough value and approximate duration, then \
-output a benign annotation immediately — skip the remaining investigation steps. Your summary \
-must include the peak/trough value, the threshold, and that it self-resolved. For scope, state \
-that the check was limited to the alert host only and that cross-host comparison was skipped \
-due to self-resolution. You still need valid JSON with non-empty summary/cause/scope and 2-4 \
+            "0. FAST-PATH CHECK: Query \
+`peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\",host=\"{s_host}\"}}` and \
+`peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\",host=\"{s_host}\"}}`. \
+If either query returns empty data, skip this check and proceed to step 1. \
+If the current level is {condition}, {resolved_when}. In that case, use a range query to \
+find the peak/trough value and approximate duration, then output a benign annotation \
+immediately — skip the remaining investigation steps. Your summary must include the \
+peak/trough value, the threshold, and that it self-resolved. For scope, state that the \
+check was limited to {s_host} only and that cross-host comparison was skipped due to \
+self-resolution. You still need valid JSON with non-empty summary/cause/scope and 2-4 \
 evidence items.\n",
             anomaly_name = spec.anomaly_name,
         )
@@ -472,7 +482,15 @@ evidence items.\n",
         }
 
         // Fallback: use category-based instructions for unknown alert names.
-        _ => return format!("{}\n\n{}", category_instructions(category), query_tip,),
+        // If fast_path_spec returned Some but no steps arm exists, the preamble
+        // would be silently discarded — catch this invariant violation in debug.
+        _ => {
+            debug_assert!(
+                fast_path_spec(alertname).is_none(),
+                "fast_path_spec returned Some for {alertname} but no steps arm exists"
+            );
+            return format!("{}\n\n{}", category_instructions(category), query_tip);
+        }
     };
 
     match fast_path_preamble {
@@ -1131,19 +1149,27 @@ mod tests {
     }
 
     #[test]
-    fn fast_path_preamble_includes_host_filter_and_empty_data_fallback() {
+    fn fast_path_preamble_embeds_host_in_promql_and_has_empty_data_fallback() {
         let prompt = build_investigation_prompt(&AlertContext {
             alertname: "PeerObserverAddressMessageSpike".into(),
+            host: "vps-prod-01".into(),
             ..default_ctx()
         });
+        // Host is embedded directly in the PromQL selector
         assert!(
-            prompt.contains("Filter both queries by the host"),
-            "fast-path should instruct Claude to filter by alert host"
+            prompt.contains(r#"host="vps-prod-01""#),
+            "fast-path should embed the alert host in PromQL selectors"
+        );
+        // Both level and band queries should have the host
+        assert!(
+            prompt.contains(r#"level{anomaly_name="addr_message_rate",host="vps-prod-01"}"#),
+            "level query should include host selector"
         );
         assert!(
-            prompt.contains("do NOT fast-path based on other hosts"),
-            "fast-path should warn against using other hosts' values"
+            prompt.contains(r#"upper_band{anomaly_name="addr_message_rate",host="vps-prod-01"}"#),
+            "band query should include host selector"
         );
+        // Empty-data fallback
         assert!(
             prompt.contains("returns empty data, skip this check"),
             "fast-path should have empty-data fallback instruction"
