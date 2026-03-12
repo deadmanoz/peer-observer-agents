@@ -82,6 +82,9 @@ pub(crate) fn sanitize(input: &str) -> String {
 /// prevent selector injection, strips ASCII control characters (U+0000–U+001F,
 /// U+007F), C1 control codes (U+0080–U+009F), and backticks (which would break
 /// the markdown code spans wrapping PromQL queries in the investigation prompt).
+///
+/// IMPORTANT: Only safe for exact-match (`=`) and inequality (`!=`) label matchers.
+/// For regex matchers (`=~`, `!~`) additional regex metacharacter escaping is required.
 fn sanitize_promql_label(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -94,6 +97,13 @@ fn sanitize_promql_label(input: &str) -> String {
         }
     }
     result
+}
+
+/// Sanitize a host value for safe embedding in prompt prose text.
+/// Applies XML entity escaping (via [`sanitize`]) and strips control characters
+/// to prevent newline injection into instruction text.
+fn sanitize_host_for_prompt(host: &str) -> String {
+    sanitize(host).chars().filter(|c| !c.is_control()).collect()
 }
 
 pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
@@ -117,7 +127,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     // Alertmanager rules or peer data. RPC data contains peer-reported values
     // (user agents, addresses) that are also attacker-controllable.
     let s_alertname = sanitize(alertname);
-    let s_host: String = sanitize(host).chars().filter(|c| !c.is_control()).collect();
+    let s_host = sanitize_host_for_prompt(host);
     let s_severity = sanitize(severity);
     let s_category = sanitize(category);
     let s_description = sanitize(description);
@@ -271,11 +281,8 @@ fn investigation_instructions(
          (use the ±30 min window around {started})."
     );
 
-    // Sanitize host for safe embedding in prompt text (XML boundary protection)
-    // and strip control characters to prevent newline injection into instruction
-    // prose (s_host is interpolated directly into step 0 instructions, not just
-    // inside XML data tags).
-    let s_host: String = sanitize(host).chars().filter(|c| !c.is_control()).collect();
+    // XML-safe + control-char-stripped host for prose text.
+    let s_host = sanitize_host_for_prompt(host);
     // Separately sanitize for PromQL label selectors (escape `"` and `\`).
     let pq_host = sanitize_promql_label(host);
 
@@ -1293,5 +1300,34 @@ mod tests {
             prompt.contains("legit-hostIgnore above"),
             "control chars should be stripped but other chars preserved"
         );
+    }
+
+    #[test]
+    fn fast_path_spec_and_steps_arms_are_in_sync() {
+        // Every alert with a fast_path_spec must have a corresponding steps arm
+        // that includes the preamble. If a new fast_path_spec entry is added without
+        // a steps arm, the preamble is silently discarded (debug_assert catches this
+        // in debug builds, but this test makes the invariant explicit).
+        let fast_path_alerts = [
+            "PeerObserverInboundConnectionDrop",
+            "PeerObserverOutboundConnectionDrop",
+            "PeerObserverAddressMessageSpike",
+            "PeerObserverMisbehaviorSpike",
+            "PeerObserverINVQueueDepthAnomaly",
+        ];
+        for alert in &fast_path_alerts {
+            assert!(
+                fast_path_spec(alert).is_some(),
+                "{alert} should have a fast_path_spec"
+            );
+            let prompt = build_investigation_prompt(&AlertContext {
+                alertname: alert.to_string(),
+                ..default_ctx()
+            });
+            assert!(
+                prompt.contains("FAST-PATH CHECK"),
+                "{alert} has fast_path_spec but its steps arm does not include the preamble"
+            );
+        }
     }
 }
