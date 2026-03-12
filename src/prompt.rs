@@ -259,12 +259,15 @@ fn investigation_instructions(alertname: &str, category: &str, started: &DateTim
         format!(
             "0. FAST-PATH CHECK: Query `peerobserver_anomaly:level{{anomaly_name=\"{anomaly_name}\"}}` \
 and `peerobserver_anomaly:{band_metric}{{anomaly_name=\"{anomaly_name}\"}}` for the alert's host. \
-If the current level is {condition}, {resolved_when}. In that case, use a range query to find \
-the peak/trough value and approximate duration, then output a benign annotation immediately — \
-skip the remaining investigation steps. Your summary must include the peak/trough value, the \
-threshold, and that it self-resolved. For scope, state that the check was limited to the alert \
-host only and that cross-host comparison was skipped due to self-resolution. You still need \
-valid JSON with non-empty summary/cause/scope and 2-4 evidence items.\n",
+IMPORTANT: Filter both queries by the host from the Alert Details section above — do NOT \
+fast-path based on other hosts' values. If either query returns empty data, skip this check \
+and proceed to step 1. If the current level for the alert host is {condition}, {resolved_when}. \
+In that case, use a range query to find the peak/trough value and approximate duration, then \
+output a benign annotation immediately — skip the remaining investigation steps. Your summary \
+must include the peak/trough value, the threshold, and that it self-resolved. For scope, state \
+that the check was limited to the alert host only and that cross-host comparison was skipped \
+due to self-resolution. You still need valid JSON with non-empty summary/cause/scope and 2-4 \
+evidence items.\n",
             anomaly_name = spec.anomaly_name,
         )
     });
@@ -1124,6 +1127,26 @@ mod tests {
         assert!(
             !prompt.contains("FAST-PATH CHECK"),
             "unknown alert should NOT get fast-path even in an anomaly-related category"
+        );
+    }
+
+    #[test]
+    fn fast_path_preamble_includes_host_filter_and_empty_data_fallback() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverAddressMessageSpike".into(),
+            ..default_ctx()
+        });
+        assert!(
+            prompt.contains("Filter both queries by the host"),
+            "fast-path should instruct Claude to filter by alert host"
+        );
+        assert!(
+            prompt.contains("do NOT fast-path based on other hosts"),
+            "fast-path should warn against using other hosts' values"
+        );
+        assert!(
+            prompt.contains("returns empty data, skip this check"),
+            "fast-path should have empty-data fallback instruction"
         );
     }
 
