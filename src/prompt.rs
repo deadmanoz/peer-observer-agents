@@ -1144,8 +1144,16 @@ mod tests {
             "PeerObserverINVQueueDepthExtreme",
             "PeerObserverBlockStale",
             "PeerObserverBlockStaleCritical",
-            "PeerObserverServiceFailed",
             "PeerObserverBitcoinCoreRestart",
+            "PeerObserverNodeInIBD",
+            "PeerObserverHeaderBlockGap",
+            "PeerObserverMempoolFull",
+            "PeerObserverMempoolEmpty",
+            "PeerObserverServiceFailed",
+            "PeerObserverMetricsToolDown",
+            "PeerObserverDiskSpaceLow",
+            "PeerObserverHighMemory",
+            "PeerObserverHighCPU",
             "PeerObserverAnomalyDetectionDown",
         ];
 
