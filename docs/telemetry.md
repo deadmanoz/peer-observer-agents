@@ -50,3 +50,27 @@ When `ANNOTATION_AGENT_LOG_FILE` is set, each successful annotation is appended 
 ```
 
 If Claude's output cannot be parsed as structured JSON (graceful fallback), the raw text is logged instead.
+
+## Cooldown Suppression
+
+When a retrigger of the same `(alertname, host)` is suppressed by the cooldown window, one of two log lines is emitted at INFO level:
+
+**In-flight suppression** (investigation for this alert has been claimed and is either queued for a concurrency slot or actively running):
+```
+INFO peer_observer_agent: skipping: investigation already in flight
+  alert_id="PeerObserverAddressMessageSpike:bitcoin-01:20250615T183100Z"
+```
+
+**Recently-completed suppression** (investigation completed within the cooldown window):
+```
+INFO peer_observer_agent: skipping: recent investigation within cooldown window
+  alert_id="PeerObserverAddressMessageSpike:bitcoin-01:20250615T194500Z"
+  cooldown_secs=1800
+  elapsed_secs=720
+```
+
+| Field | Description |
+|-------|-------------|
+| `alert_id` | Stable correlation ID of the suppressed alert |
+| `cooldown_secs` | Configured cooldown window (seconds) |
+| `elapsed_secs` | Time since the last successful investigation completed |

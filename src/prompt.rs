@@ -222,7 +222,7 @@ FIELD RULES:
   - "benign" = definitively not a problem, no monitoring needed.
   - "investigate" = not immediately actionable but warrants monitoring or follow-up.
   - "action_required" = operator must do something specific RIGHT NOW.
-- action: A specific operator command or step. MUST be null when verdict is "benign". MUST be a non-empty string when verdict is "action_required" (e.g., "run getpeerinfo on vps-prod-01 and ban peers with addr_rate_limited=true"). Optional for "investigate" (e.g., "monitor for 15 minutes, escalate if rate exceeds 35/s").
+- action: A specific operator step. MUST be null when verdict is "benign". MUST be a non-empty string when verdict is "action_required" (e.g., "check getpeerinfo on vps-prod-01 and identify peers with addr_rate_limited>0"). Optional for "investigate" (e.g., "monitor for 15 minutes, escalate if rate exceeds 35/s"). IMPORTANT: These are research/monitoring nodes — NEVER recommend disconnecting or banning peers. The goal is to observe and document network behavior, not intervene.
 - summary: Aim for 1-2 sentences. MUST include the key metric value and threshold. If prior annotations exist for related events, reference them here (e.g., "continuation of addr spike incident first seen at 22:55 UTC").
 - cause: The identified or likely root cause with supporting evidence. Be SPECIFIC: name peer IPs if identified, quote exact metric values, state the mechanism.
 - scope: Whether the alert is isolated or multi-host. Name the hosts checked and their status (e.g., "isolated to vps-prod-01 (vps-dev-01: 3.79/s normal, bitcoin-01: 0.31/s normal)").
@@ -370,7 +370,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 3. For the top sender(s), check their connection age, network type, and user agent from the RPC data.
 4. Determine the pattern: is it a single peer flooding, or multiple peers sending bursts simultaneously?
 5. Check if other hosts see the same spike from the same source IP(s) via Prometheus.
-6. Conclude: identify whether this is addr spam/reconnaissance, a legitimate addr relay surge (e.g., after a network event), or a buggy peer implementation. Name the offending peer IP(s) and recommend whether to ban them."#
+6. Conclude: identify whether this is addr spam/reconnaissance, a legitimate addr relay surge (e.g., after a network event), or a buggy peer implementation. Name the source peer IP(s) and characterize their behavior — do NOT recommend banning or disconnecting peers (these are research/monitoring nodes)."#
         }
 
         // ── Security alerts ──────────────────────────────────────────────
@@ -380,7 +380,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 3. Cross-reference the Prometheus misbehavior metrics with the RPC peer list to narrow down which peer(s) are generating the misbehavior score by IP.
 4. For the offending peer(s), check their connection age and user agent — short-lived connections with unusual user agents are more suspicious.
 5. Compare across hosts — are other nodes seeing misbehavior from the same IP(s)?
-6. Conclude: determine if this is a protocol attack, a buggy node implementation, or an eclipse attempt. Name the offending peer IP(s) and recommend whether immediate peer disconnection/banning is warranted."#
+6. Conclude: determine if this is a protocol attack, a buggy node implementation, or an eclipse attempt. Name the offending peer IP(s) and characterize the threat — do NOT recommend disconnecting or banning peers (these are research/monitoring nodes)."#
         }
 
         // ── Performance / queue alerts ───────────────────────────────────
@@ -390,7 +390,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 3. Check the RPC Data section above for per-peer details — cross-reference peers with deep queues against their `addr`, `subver`, `conntime`, and `network` from the RPC data.
 4. For peers with deep queues, check `lastrecv` and `lastsend` timestamps from the RPC data — a large gap between lastrecv and now indicates a stalled peer.
 5. Check mempool transaction volume — a sudden mempool surge will naturally increase INV queue depths across all peers.
-6. Conclude: determine if this is caused by stalled peers that should be disconnected, or a legitimate transaction volume spike. Name the offending peer IP(s) if identifiable. Reference: https://b10c.me/observations/15-inv-to-send-queue/"#
+6. Conclude: determine if this is caused by stalled peers or a legitimate transaction volume spike. Name the offending peer IP(s) if identifiable — do NOT recommend disconnecting peers (these are research/monitoring nodes). Reference: https://b10c.me/observations/15-inv-to-send-queue/"#
         }
 
         "PeerObserverINVQueueDepthExtreme" => {
@@ -399,7 +399,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 3. Cross-reference with the RPC Data section above — match the peer ID to get the full peer details including `addr`, `subver`, `conntime`, and `network`.
 4. Check `lastrecv` and `lastsend` timestamps from the RPC data — a stalled peer stops draining its INV queue and will show stale activity timestamps.
 5. Compare across hosts — is the same peer causing problems on multiple nodes?
-6. Conclude: this almost always indicates a stalled or extremely slow peer that should be disconnected. Name the peer IP from the RPC data and recommend immediate action. Reference: https://b10c.me/observations/15-inv-to-send-queue/"#
+6. Conclude: this almost always indicates a stalled or extremely slow peer. Name the peer IP from the RPC data and document the behavior — do NOT recommend disconnecting peers (these are research/monitoring nodes). Reference: https://b10c.me/observations/15-inv-to-send-queue/"#
         }
 
         // ── Chain health alerts ──────────────────────────────────────────
@@ -577,7 +577,7 @@ fn category_instructions(category: &str) -> &'static str {
 3. Identify which peer(s) are causing the misbehavior — break down by peer IP.
 4. Check the type of misbehavior and the peer's user agent and connection age.
 5. Compare across hosts — is the same peer misbehaving on multiple nodes?
-6. Conclude whether this is an attack, buggy software, or false positive, and recommend action."#
+6. Conclude whether this is an attack, buggy software, or false positive — document the behavior but do NOT recommend disconnecting or banning peers (these are research/monitoring nodes)."#
         }
 
         "performance" => {
@@ -586,7 +586,7 @@ fn category_instructions(category: &str) -> &'static str {
 3. Break down queue depths by peer to identify stalled or slow peers.
 4. Check mempool transaction volume — surges naturally increase queue depths.
 5. For peers with deep queues, check responsiveness and message throughput.
-6. Conclude whether stalled peers need disconnection or this is a legitimate volume spike."#
+6. Conclude whether this is caused by stalled peers or a legitimate volume spike — document the behavior but do NOT recommend disconnecting peers (these are research/monitoring nodes)."#
         }
 
         "chain_health" => {

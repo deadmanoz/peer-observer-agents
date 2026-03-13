@@ -16,7 +16,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use prompt::AlertContext;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, fmt, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, env, fmt, net::SocketAddr, sync::Arc, time::Duration, time::Instant,
+};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::{fs::OpenOptions, io::AsyncWriteExt, process::Command};
@@ -30,6 +32,103 @@ const DEFAULT_CLAUDE_TIMEOUT_SECS: u64 = 600;
 
 /// Default maximum number of concurrent Claude investigations.
 const DEFAULT_MAX_CONCURRENT: usize = 4;
+
+/// Default cooldown window (seconds) for suppressing retriggers of the same
+/// `(alertname, host)` pair. 0 = disabled.
+const DEFAULT_COOLDOWN_SECS: u64 = 1800;
+
+// ── Cooldown suppression ──────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+enum CooldownState {
+    InFlight,
+    Completed(Instant),
+}
+
+type CooldownKey = (String, String);
+type CooldownMap = std::sync::Mutex<HashMap<CooldownKey, CooldownState>>;
+
+/// Why a claim was rejected.
+#[derive(Debug)]
+enum SuppressReason {
+    InFlight,
+    RecentlyCompleted { elapsed_secs: u64 },
+}
+
+/// RAII guard that manages cooldown state transitions.
+/// - Created by `try_claim_cooldown` which atomically checks + inserts `InFlight`.
+/// - `complete()`: transitions to `Completed(Instant::now())`.
+/// - Drop without `complete()`: removes the entry (failure/panic cleanup).
+struct CooldownGuard<'a> {
+    key: CooldownKey,
+    map: &'a CooldownMap,
+    completed: bool,
+}
+
+impl<'a> CooldownGuard<'a> {
+    fn complete(mut self) {
+        self.map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.key.clone(), CooldownState::Completed(Instant::now()));
+        // ORDERING: `completed` must be set AFTER the insert returns. If `completed`
+        // were true before the insert and the insert panicked, Drop would skip cleanup
+        // and leave a stale `InFlight` entry permanently suppressing this key.
+        self.completed = true;
+    }
+}
+
+impl Drop for CooldownGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.map
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.key);
+        }
+    }
+}
+
+/// Atomically check existing state and claim InFlight if allowed.
+/// Single mutex acquisition — no TOCTOU race between check and insert.
+/// Also sweeps stale `Completed` entries (expired beyond the cooldown window)
+/// to prevent unbounded growth on long-lived instances.
+fn try_claim_cooldown<'a>(
+    key: CooldownKey,
+    map: &'a CooldownMap,
+    cooldown: Duration,
+) -> std::result::Result<CooldownGuard<'a>, SuppressReason> {
+    let mut locked = map.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Sweep stale entries while we hold the lock.
+    locked.retain(|_, v| match v {
+        CooldownState::InFlight => true,
+        CooldownState::Completed(at) => at.elapsed() < cooldown,
+    });
+
+    match locked.get(&key) {
+        Some(CooldownState::InFlight) => {
+            return Err(SuppressReason::InFlight);
+        }
+        Some(CooldownState::Completed(at)) => {
+            let elapsed = at.elapsed();
+            if elapsed < cooldown {
+                return Err(SuppressReason::RecentlyCompleted {
+                    elapsed_secs: elapsed.as_secs(),
+                });
+            }
+            // Entry just expired between the sweep and this check — fall through
+            // to claim InFlight below.
+        }
+        _ => {}
+    }
+    locked.insert(key.clone(), CooldownState::InFlight);
+    Ok(CooldownGuard {
+        key,
+        map,
+        completed: false,
+    })
+}
 
 struct AppState {
     grafana_url: String,
@@ -46,6 +145,11 @@ struct AppState {
     /// Limits the number of concurrent Claude investigations to prevent
     /// resource exhaustion when Alertmanager delivers large grouped batches.
     investigation_semaphore: Semaphore,
+    /// Cooldown window for suppressing retriggers of the same `(alertname, host)`.
+    /// `Duration::ZERO` disables suppression.
+    cooldown: Duration,
+    /// In-process state for cooldown suppression.
+    cooldown_map: CooldownMap,
 }
 
 // Alertmanager webhook payload types.
@@ -167,6 +271,11 @@ async fn main() -> Result<()> {
         .unwrap_or(DEFAULT_MAX_CONCURRENT)
         .max(1); // Prevent deadlock: 0 permits would block all investigations forever.
 
+    let cooldown_secs: u64 = env::var("ANNOTATION_AGENT_COOLDOWN_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_COOLDOWN_SECS);
+
     // Bitcoin Core RPC client: enabled when ANNOTATION_AGENT_RPC_HOSTS is set.
     // Partial/malformed config fails fast at startup.
     let rpc_client = match env::var("ANNOTATION_AGENT_RPC_HOSTS") {
@@ -238,7 +347,18 @@ async fn main() -> Result<()> {
             .context("failed to build HTTP client")?,
         rpc_client,
         investigation_semaphore: Semaphore::new(max_concurrent),
+        cooldown: Duration::from_secs(cooldown_secs),
+        cooldown_map: std::sync::Mutex::new(HashMap::new()),
     });
+
+    if state.cooldown.is_zero() {
+        info!("cooldown suppression disabled");
+    } else {
+        info!(
+            cooldown_secs = state.cooldown.as_secs(),
+            "cooldown suppression enabled"
+        );
+    }
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -298,6 +418,31 @@ async fn handle_webhook(
 }
 
 async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<()> {
+    // Cooldown suppression: coalesce retriggers of the same (alertname, host)
+    // within the cooldown window. Checked before the semaphore to avoid holding
+    // a concurrency slot for suppressed alerts.
+    let cooldown_guard = if !state.cooldown.is_zero() {
+        let key: CooldownKey = (aid.alertname.clone(), aid.host.clone());
+        match try_claim_cooldown(key, &state.cooldown_map, state.cooldown) {
+            Ok(guard) => Some(guard),
+            Err(SuppressReason::InFlight) => {
+                info!(alert_id = %aid, "skipping: investigation already in flight");
+                return Ok(());
+            }
+            Err(SuppressReason::RecentlyCompleted { elapsed_secs }) => {
+                info!(
+                    alert_id = %aid,
+                    cooldown_secs = state.cooldown.as_secs(),
+                    elapsed_secs,
+                    "skipping: recent investigation within cooldown window"
+                );
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+
     let _permit = state
         .investigation_semaphore
         .acquire()
@@ -325,6 +470,19 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
             append_log(state, alert, &aid.alertname, &sanitized).await;
             info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
         }
+    }
+
+    // Mark cooldown as completed only after both Claude AND Grafana succeed.
+    // If Grafana fails, the guard drops without complete(), clearing the
+    // InFlight entry so Alertmanager retries are not suppressed.
+    //
+    // Trade-off: during a sustained Grafana outage, every Alertmanager retry
+    // re-invokes Claude (expensive) because the cooldown is never committed.
+    // This is intentional — the alternative (completing after Claude only)
+    // silently drops annotations when Grafana recovers, because the cooldown
+    // suppresses the retry before `annotation_exists` is ever reached.
+    if let Some(guard) = cooldown_guard {
+        guard.complete();
     }
 
     Ok(())
@@ -761,6 +919,8 @@ mod tests {
             http: reqwest::Client::new(),
             rpc_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
+            cooldown: Duration::ZERO,
+            cooldown_map: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1102,6 +1262,90 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// Build a test state with cooldown enabled and a pre-populated cooldown map.
+    fn test_state_with_cooldown(key: CooldownKey, entry: CooldownState) -> Arc<AppState> {
+        let mut map = HashMap::new();
+        map.insert(key, entry);
+        Arc::new(AppState {
+            grafana_url: "http://localhost:3000".into(),
+            grafana_api_key: "test-key".into(),
+            claude_bin: "echo".into(),
+            claude_model: "claude-sonnet-4-6".into(),
+            mcp_config: "/dev/null".into(),
+            log_file: None,
+            claude_timeout: Duration::from_secs(DEFAULT_CLAUDE_TIMEOUT_SECS),
+            http: reqwest::Client::new(),
+            rpc_client: None,
+            investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
+            cooldown: Duration::from_secs(1800),
+            cooldown_map: std::sync::Mutex::new(map),
+        })
+    }
+
+    #[tokio::test]
+    async fn webhook_suppresses_recently_completed_alert() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        // Pre-populate: TestAlert on "unknown" host was just investigated.
+        let state = test_state_with_cooldown(
+            ("TestAlert".into(), "unknown".into()),
+            CooldownState::Completed(Instant::now()),
+        );
+        let app = Router::new()
+            .route("/webhook", post(handle_webhook))
+            .with_state(state);
+
+        // Same alert fires again — without cooldown this would return 500
+        // (unreachable Claude/Grafana), but cooldown suppresses it → 200.
+        let body = r#"{"alerts": [{"status": "firing", "labels": {"alertname": "TestAlert"}, "startsAt": "2025-01-01T00:00:00Z"}]}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "recently-completed alert should be suppressed and return 200"
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_suppresses_inflight_alert() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        // Pre-populate: TestAlert on "unknown" host is currently being investigated.
+        let state = test_state_with_cooldown(
+            ("TestAlert".into(), "unknown".into()),
+            CooldownState::InFlight,
+        );
+        let app = Router::new()
+            .route("/webhook", post(handle_webhook))
+            .with_state(state);
+
+        let body = r#"{"alerts": [{"status": "firing", "labels": {"alertname": "TestAlert"}, "startsAt": "2025-01-01T00:00:00Z"}]}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "in-flight alert should be suppressed and return 200"
+        );
+    }
+
     // ── Health endpoint ────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1219,5 +1463,129 @@ mod tests {
         );
         assert!(ctx.contains("VERDICT:"));
         assert!(ctx.contains("SUMMARY:"));
+    }
+
+    // ── Cooldown suppression ──────────────────────────────────────────
+
+    #[test]
+    fn default_cooldown_is_30_minutes() {
+        assert_eq!(DEFAULT_COOLDOWN_SECS, 1800);
+    }
+
+    #[test]
+    fn try_claim_succeeds_on_empty_map() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        let guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30));
+        assert!(guard.is_ok());
+        let locked = map.lock().unwrap();
+        assert!(matches!(locked.get(&key), Some(CooldownState::InFlight)));
+    }
+
+    #[test]
+    fn try_claim_suppresses_inflight() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        let _guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
+        let result = try_claim_cooldown(key, &map, Duration::from_secs(30));
+        assert!(matches!(result, Err(SuppressReason::InFlight)));
+    }
+
+    #[test]
+    fn try_claim_suppresses_completed_within_window() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        map.lock()
+            .unwrap()
+            .insert(key.clone(), CooldownState::Completed(Instant::now()));
+        let result = try_claim_cooldown(key, &map, Duration::from_secs(30));
+        assert!(matches!(
+            result,
+            Err(SuppressReason::RecentlyCompleted { .. })
+        ));
+    }
+
+    #[test]
+    fn try_claim_allows_completed_beyond_window() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        let past = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        map.lock()
+            .unwrap()
+            .insert(key.clone(), CooldownState::Completed(past));
+        let result = try_claim_cooldown(key, &map, Duration::from_secs(1));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn try_claim_allows_different_key() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key_a = ("AlertA".to_string(), "host1".to_string());
+        let key_b = ("AlertB".to_string(), "host1".to_string());
+        let _guard_a = try_claim_cooldown(key_a, &map, Duration::from_secs(30)).unwrap();
+        let result = try_claim_cooldown(key_b, &map, Duration::from_secs(30));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn guard_complete_transitions_to_completed() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        let guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
+        guard.complete();
+        let locked = map.lock().unwrap();
+        assert!(matches!(
+            locked.get(&key),
+            Some(CooldownState::Completed(_))
+        ));
+    }
+
+    #[test]
+    fn guard_drop_without_complete_clears_entry() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        {
+            let _guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
+            // guard drops here without complete()
+        }
+        let locked = map.lock().unwrap();
+        assert!(locked.get(&key).is_none());
+    }
+
+    #[test]
+    fn guard_panic_safety() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
+            panic!("simulated failure");
+        }));
+        assert!(result.is_err());
+        let locked = map.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            locked.get(&key).is_none(),
+            "entry should be cleared after panic"
+        );
+    }
+
+    #[test]
+    fn cooldown_zero_does_not_suppress() {
+        // Tests the internal invariant of try_claim_cooldown with Duration::ZERO.
+        // In production, process_alert guards with `if !state.cooldown.is_zero()`
+        // so this path is bypassed, but the function should still behave correctly.
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key = ("AlertA".to_string(), "host1".to_string());
+        map.lock()
+            .unwrap()
+            .insert(key.clone(), CooldownState::Completed(Instant::now()));
+
+        // With zero cooldown, the retain sweep removes the Completed entry
+        // (at.elapsed() < ZERO is always false), so get(&key) returns None
+        // and the function falls through to claim InFlight.
+        let result = try_claim_cooldown(key, &map, Duration::ZERO);
+        assert!(
+            result.is_ok(),
+            "zero cooldown should not suppress even a just-completed entry"
+        );
     }
 }

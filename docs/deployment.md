@@ -21,7 +21,8 @@ This service is designed for deployment on trusted internal networks behind a re
 
 - **Unauthenticated webhook endpoint**: The `/webhook` endpoint accepts Alertmanager payloads without authentication. It must not be exposed to the public internet — restrict access to Alertmanager's IP or a localhost-only bind address.
 - **`--dangerously-skip-permissions`**: Claude CLI is invoked with this flag to enable autonomous MCP tool use. This is required for unattended operation but means the Claude process has unrestricted tool access. The MCP config should only expose the Prometheus read API.
-- **Idempotency**: Duplicate annotations are prevented by checking Grafana for existing annotations before posting. If Alertmanager retries a webhook after a partial failure, already-posted annotations will be skipped.
+- **Cooldown suppression**: Before invoking Claude, in-process cooldown suppression coalesces retriggers of the same `(alertname, host)` within a configurable window (`ANNOTATION_AGENT_COOLDOWN_SECS`, default 30 minutes). An RAII `CooldownGuard` manages state transitions — successful investigations mark the entry as completed, while failures or panics clear the entry so Alertmanager retries are not suppressed. State does not survive process restarts.
+- **Grafana idempotency**: After investigation, duplicate annotations are prevented by checking Grafana for existing annotations (±1s around `startsAt`) before posting. If Alertmanager retries a webhook after a partial failure, already-posted annotations will be skipped.
 
 ## Health Endpoint
 
@@ -61,6 +62,7 @@ All config via environment variables prefixed `ANNOTATION_AGENT_*`:
 | `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` | `30` | HTTP client timeout for Grafana API calls |
 | `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` | `600` | Max wall-clock time for a Claude CLI investigation |
 | `ANNOTATION_AGENT_MAX_CONCURRENT` | `4` | Max concurrent Claude investigations (values below 1 are coerced to 1) |
+| `ANNOTATION_AGENT_COOLDOWN_SECS` | `1800` | Cooldown window for suppressing retriggers of the same `(alertname, host)` (0 = disabled) |
 | `ANNOTATION_AGENT_RPC_HOSTS` | (optional) | JSON map of host names to WireGuard IPs for Bitcoin Core RPC pre-fetch |
 | `ANNOTATION_AGENT_RPC_USER` | `rpc-extractor` | Bitcoin Core RPC username |
 | `ANNOTATION_AGENT_RPC_PASSWORD` | (required if RPC_HOSTS set) | Bitcoin Core RPC password |
