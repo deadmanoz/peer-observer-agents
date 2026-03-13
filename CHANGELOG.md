@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Cooldown suppression for retriggers of the same `(alertname, host)` within a configurable window (`ANNOTATION_AGENT_COOLDOWN_SECS`, default 30 minutes). Uses an RAII guard for panic-safe state management. Failed investigations clear the cooldown so Alertmanager retries are not suppressed.
+
 ## [0.3.0] - 2026-03-12
 
 ### Added

@@ -26,14 +26,15 @@ Alertmanager webhook
 ```
 
 1. Alertmanager sends a webhook to `POST /webhook`
-2. For each firing alert, the agent calls Claude Code CLI with a Prometheus MCP server
-3. Claude autonomously queries Prometheus — discovering metrics, drilling into per-peer data, correlating across hosts, and identifying root causes
-4. Posts the investigation findings as a structured Grafana annotation with tags `[ai-annotation, alertname, host, verdict]` where verdict is `benign`, `investigate`, or `action_required` (verdict tag omitted when structured parsing fails and raw text is posted as fallback)
-5. Logs telemetry with a stable [correlation ID](docs/telemetry.md) for end-to-end tracing
+2. For each firing alert, cooldown suppression checks whether the same `(alertname, host)` is already claimed (queued or running) or was recently investigated — if so, the alert is skipped before Claude is invoked
+3. If not suppressed, the agent calls Claude Code CLI with a Prometheus MCP server
+4. Claude autonomously queries Prometheus — discovering metrics, drilling into per-peer data, correlating across hosts, and identifying root causes
+5. Posts the investigation findings as a structured Grafana annotation with tags `[ai-annotation, alertname, host, verdict]` where verdict is `benign`, `investigate`, or `action_required` (verdict tag omitted when structured parsing fails and raw text is posted as fallback)
+6. Logs telemetry with a stable [correlation ID](docs/telemetry.md) for end-to-end tracing
 
 ### Configuration
 
-All config via environment variables prefixed `ANNOTATION_AGENT_*`. Required: `ANNOTATION_AGENT_GRAFANA_API_KEY`, `ANNOTATION_AGENT_MCP_CONFIG`. See [Configuration Reference](docs/deployment.md#configuration-reference) for the full table.
+All config via environment variables prefixed `ANNOTATION_AGENT_*`. Required: `ANNOTATION_AGENT_GRAFANA_API_KEY`, `ANNOTATION_AGENT_MCP_CONFIG`. Optional: `ANNOTATION_AGENT_COOLDOWN_SECS` (default 1800; 0 disables) suppresses redundant investigations when the same alert retriggers within the cooldown window. See [Configuration Reference](docs/deployment.md#configuration-reference) for the full table.
 
 ### Quick Start
 
