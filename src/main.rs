@@ -448,15 +448,6 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
         .context("investigation semaphore closed")?;
     let raw_explanation = call_claude(state, alert, aid).await?;
 
-    // Mark cooldown as completed immediately after Claude succeeds.
-    // If Grafana posting subsequently fails, Alertmanager will retry the
-    // webhook, but the cooldown will suppress a redundant Claude call.
-    // The Grafana idempotency check (±1s around startsAt) prevents duplicate
-    // annotations on that retry.
-    if let Some(guard) = cooldown_guard {
-        guard.complete();
-    }
-
     match parse_structured_annotation(&raw_explanation) {
         Ok(ann) => {
             let html = render_annotation_html(&ann);
@@ -477,6 +468,13 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
             append_log(state, alert, &aid.alertname, &sanitized).await;
             info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
         }
+    }
+
+    // Mark cooldown as completed only after both Claude AND Grafana succeed.
+    // If Grafana fails, the guard drops without complete(), clearing the
+    // InFlight entry so Alertmanager retries are not suppressed.
+    if let Some(guard) = cooldown_guard {
+        guard.complete();
     }
 
     Ok(())
