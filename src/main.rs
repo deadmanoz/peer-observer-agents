@@ -1570,16 +1570,18 @@ mod tests {
 
     #[test]
     fn cooldown_zero_does_not_suppress() {
-        // Duration::ZERO passed to try_claim_cooldown means the Completed window
-        // is always expired, so even a just-completed entry won't suppress.
+        // Tests the internal invariant of try_claim_cooldown with Duration::ZERO.
+        // In production, process_alert guards with `if !state.cooldown.is_zero()`
+        // so this path is bypassed, but the function should still behave correctly.
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
         let key = ("AlertA".to_string(), "host1".to_string());
         map.lock()
             .unwrap()
             .insert(key.clone(), CooldownState::Completed(Instant::now()));
 
-        // With zero cooldown, the Completed(now) entry should NOT suppress because
-        // elapsed (≥0) is never < Duration::ZERO.
+        // With zero cooldown, the retain sweep removes the Completed entry
+        // (at.elapsed() < ZERO is always false), so get(&key) returns None
+        // and the function falls through to claim InFlight.
         let result = try_claim_cooldown(key, &map, Duration::ZERO);
         assert!(
             result.is_ok(),
