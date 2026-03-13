@@ -71,9 +71,9 @@ impl<'a> CooldownGuard<'a> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(self.key.clone(), CooldownState::Completed(Instant::now()));
-        // ORDERING: `completed` must be set AFTER the insert succeeds. If insert
-        // panicked (e.g. OOM) with completed already true, Drop would skip cleanup
-        // and leave a stale InFlight entry permanently suppressing this key.
+        // ORDERING: `completed` must be set AFTER the insert returns. If `completed`
+        // were true before the insert and the insert panicked, Drop would skip cleanup
+        // and leave a stale `InFlight` entry permanently suppressing this key.
         self.completed = true;
     }
 }
@@ -117,6 +117,8 @@ fn try_claim_cooldown<'a>(
                     elapsed_secs: elapsed.as_secs(),
                 });
             }
+            // Entry just expired between the sweep and this check — fall through
+            // to claim InFlight below.
         }
         _ => {}
     }
@@ -473,6 +475,12 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
     // Mark cooldown as completed only after both Claude AND Grafana succeed.
     // If Grafana fails, the guard drops without complete(), clearing the
     // InFlight entry so Alertmanager retries are not suppressed.
+    //
+    // Trade-off: during a sustained Grafana outage, every Alertmanager retry
+    // re-invokes Claude (expensive) because the cooldown is never committed.
+    // This is intentional — the alternative (completing after Claude only)
+    // silently drops annotations when Grafana recovers, because the cooldown
+    // suppresses the retry before `annotation_exists` is ever reached.
     if let Some(guard) = cooldown_guard {
         guard.complete();
     }
