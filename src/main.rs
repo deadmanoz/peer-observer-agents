@@ -88,20 +88,32 @@ impl Drop for CooldownGuard<'_> {
 
 /// Atomically check existing state and claim InFlight if allowed.
 /// Single mutex acquisition — no TOCTOU race between check and insert.
+/// Also sweeps stale `Completed` entries (expired beyond the cooldown window)
+/// to prevent unbounded growth on long-lived instances.
 fn try_claim_cooldown<'a>(
     key: CooldownKey,
     map: &'a CooldownMap,
     cooldown: Duration,
 ) -> std::result::Result<CooldownGuard<'a>, SuppressReason> {
     let mut locked = map.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Sweep stale entries while we hold the lock.
+    locked.retain(|_, v| match v {
+        CooldownState::InFlight => true,
+        CooldownState::Completed(at) => at.elapsed() < cooldown,
+    });
+
     match locked.get(&key) {
         Some(CooldownState::InFlight) => {
             return Err(SuppressReason::InFlight);
         }
-        Some(CooldownState::Completed(at)) if at.elapsed() < cooldown => {
-            return Err(SuppressReason::RecentlyCompleted {
-                elapsed_secs: at.elapsed().as_secs(),
-            });
+        Some(CooldownState::Completed(at)) => {
+            let elapsed = at.elapsed();
+            if elapsed < cooldown {
+                return Err(SuppressReason::RecentlyCompleted {
+                    elapsed_secs: elapsed.as_secs(),
+                });
+            }
         }
         _ => {}
     }
