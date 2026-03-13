@@ -71,6 +71,9 @@ impl<'a> CooldownGuard<'a> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(self.key.clone(), CooldownState::Completed(Instant::now()));
+        // ORDERING: `completed` must be set AFTER the insert succeeds. If insert
+        // panicked (e.g. OOM) with completed already true, Drop would skip cleanup
+        // and leave a stale InFlight entry permanently suppressing this key.
         self.completed = true;
     }
 }
@@ -445,6 +448,15 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
         .context("investigation semaphore closed")?;
     let raw_explanation = call_claude(state, alert, aid).await?;
 
+    // Mark cooldown as completed immediately after Claude succeeds.
+    // If Grafana posting subsequently fails, Alertmanager will retry the
+    // webhook, but the cooldown will suppress a redundant Claude call.
+    // The Grafana idempotency check (±1s around startsAt) prevents duplicate
+    // annotations on that retry.
+    if let Some(guard) = cooldown_guard {
+        guard.complete();
+    }
+
     match parse_structured_annotation(&raw_explanation) {
         Ok(ann) => {
             let html = render_annotation_html(&ann);
@@ -465,10 +477,6 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
             append_log(state, alert, &aid.alertname, &sanitized).await;
             info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
         }
-    }
-
-    if let Some(guard) = cooldown_guard {
-        guard.complete();
     }
 
     Ok(())
