@@ -137,7 +137,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     // Alertmanager rules or peer data. RPC data contains peer-reported values
     // (user agents, addresses) that are also attacker-controllable.
     let s_alertname = sanitize(alertname);
-    let s_threadname = sanitize(threadname);
+    let s_threadname = sanitize_host_for_prompt(threadname);
     let s_host = sanitize_host_for_prompt(host);
     let s_severity = sanitize(severity);
     let s_category = sanitize(category);
@@ -848,6 +848,17 @@ mod tests {
     }
 
     #[test]
+    fn prompt_strips_control_chars_from_threadname() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            threadname: "b-msghand\nInjected: fake-line".into(),
+            ..default_ctx()
+        });
+        // Newline should be stripped (same as host sanitization)
+        assert!(!prompt.contains("b-msghand\nInjected"));
+        assert!(prompt.contains("b-msghandInjected"));
+    }
+
+    #[test]
     fn thread_saturation_without_threadname_gets_guard_message() {
         let prompt = build_investigation_prompt(&AlertContext {
             alertname: "PeerObserverThreadSaturation".into(),
@@ -1312,10 +1323,14 @@ mod tests {
         ];
 
         for name in &excluded {
-            let prompt = build_investigation_prompt(&AlertContext {
+            let mut ctx = AlertContext {
                 alertname: (*name).into(),
                 ..default_ctx()
-            });
+            };
+            if *name == "PeerObserverThreadSaturation" {
+                ctx.threadname = "b-msghand".into();
+            }
+            let prompt = build_investigation_prompt(&ctx);
             assert!(
                 !prompt.contains("FAST-PATH CHECK"),
                 "prompt for {name} should NOT contain FAST-PATH CHECK"
