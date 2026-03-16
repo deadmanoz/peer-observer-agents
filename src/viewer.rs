@@ -351,17 +351,19 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
 /// Constant-time byte slice comparison to prevent timing side-channels.
 /// Always iterates `expected.len()` times regardless of `submitted` length,
 /// so the only timing signal is the expected token's length (which is fixed
-/// per deployment, not attacker-controlled).
+/// per deployment, not attacker-controlled). Uses `black_box` to prevent
+/// LLVM from proving early-exit optimisations on the accumulator.
 fn constant_time_eq(submitted: &[u8], expected: &[u8]) -> bool {
+    use std::hint::black_box;
     let mut acc = if submitted.len() == expected.len() {
         0u8
     } else {
         1u8
     };
     for (i, y) in expected.iter().enumerate() {
-        acc |= submitted.get(i).copied().unwrap_or(0) ^ y;
+        acc |= black_box(submitted.get(i).copied().unwrap_or(0) ^ y);
     }
-    acc == 0
+    black_box(acc) == 0
 }
 
 /// `GET /api/logs` — reads the JSONL log file, applies server-side filters,
