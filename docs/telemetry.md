@@ -43,13 +43,15 @@ The agent fetches recent AI annotations from Grafana (last 1 hour, same host) an
 
 ## Log File
 
-When `ANNOTATION_AGENT_LOG_FILE` is set, each successful annotation is appended as a single plain-text line with pipe-delimited structured fields:
+When `ANNOTATION_AGENT_LOG_FILE` is set, each successful annotation is appended as a single JSONL line (one JSON object per line):
 
-```
-[2025-06-15 12:00:00 UTC] PeerObserverBlockStale on bitcoin-03 — VERDICT: BENIGN | ACTION: none | SUMMARY: Slow block interval, all hosts at same height. | CAUSE: Normal mining variance. | SCOPE: multi-host (all 3 hosts at height 890421) | EVIDENCE: last_block: 47 min ago; all hosts synced at 890421
+```json
+{"v":1,"logged_at":"2025-06-15T12:05:23Z","alert_starts_at":"2025-06-15T12:00:00Z","alert_id":"PeerObserverBlockStale:bitcoin-03:20250615T120000Z","alertname":"PeerObserverBlockStale","host":"bitcoin-03","threadname":"","entry_kind":"structured","verdict":"benign","summary":"Slow block interval, all hosts at same height.","cause":"Normal mining variance.","scope":"multi-host","evidence":["last_block: 47 min ago","all hosts synced at 890421"],"telemetry":{"num_turns":12,"duration_ms":58000,"duration_api_ms":45000,"cost_usd":0.04,"input_tokens":18000,"output_tokens":2500,"stop_reason":"end_turn","session_id":"abc-123"}}
 ```
 
-If Claude's output cannot be parsed as structured JSON (graceful fallback), the raw text is logged instead.
+Each entry has two timestamps: `logged_at` (wall-clock time when the entry was written, used for ordering) and `alert_starts_at` (from Alertmanager). The `entry_kind` field distinguishes `structured` entries (with verdict, summary, cause, scope, evidence) from `raw_fallback` entries (with `raw_text` containing unparseable Claude output).
+
+**Breaking change (v0.5.0)**: The log format changed from pipe-delimited plaintext to JSONL. Existing log files must be deleted or rotated before upgrade.
 
 ## Cooldown Suppression
 

@@ -29,7 +29,9 @@ nix build                      # Build via flake (Linux/CI)
 ## Project Structure
 
 - `src/main.rs` — HTTP server, webhook handler, Claude CLI invocation, Grafana annotation posting, idempotency, telemetry
-- `src/annotation.rs` — Structured annotation types (Verdict, StructuredAnnotation), JSON parsing/validation, HTML/plaintext rendering, log field sanitization, HTML stripping
+- `src/annotation.rs` — Structured annotation types (Verdict, StructuredAnnotation), JSON parsing/validation, HTML rendering, HTML stripping
+- `src/viewer.rs` — JSONL log entry types (LogEntry, Telemetry, EntryKind), log file writer, `/api/logs` API handler with cursor pagination and server-side filters, `/logs` HTML viewer page
+- `src/viewer.html` — Self-contained HTML/CSS/JS log viewer (embedded via `include_str!`). Renders annotation history with verdict badges, expandable rows, filters, client-side search. All user content rendered via `textContent` (no `innerHTML`) for XSS safety.
 - `src/prompt.rs` — Alert context extraction and investigation prompt generation (per-alert and per-category instructions, including `PeerObserverThreadSaturation` for per-thread CPU saturation)
 - `src/rpc.rs` — Bitcoin Core JSON-RPC client for pre-fetching node data (getpeerinfo, getblockchaininfo, etc.) over WireGuard
 - `Cargo.toml` — Dependencies
@@ -66,12 +68,16 @@ Required: `ANNOTATION_AGENT_GRAFANA_API_KEY`, `ANNOTATION_AGENT_MCP_CONFIG`
 
 Optional tuning: `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` (default 30), `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` (default 600), `ANNOTATION_AGENT_MAX_CONCURRENT` (default 4), `ANNOTATION_AGENT_COOLDOWN_SECS` (default 1800, 0 = disabled)
 
+Optional viewer: `ANNOTATION_AGENT_VIEWER_AUTH_TOKEN` (Bearer token for `/logs` and `/api/logs`; viewer routes only registered when both this and `LOG_FILE` are set)
+
 Optional RPC pre-fetch: `ANNOTATION_AGENT_RPC_HOSTS` (JSON host→IP map), `ANNOTATION_AGENT_RPC_PASSWORD` (required if RPC_HOSTS set), `ANNOTATION_AGENT_RPC_USER` (default `rpc-extractor`), `ANNOTATION_AGENT_RPC_PORT` (default 9000)
 
 ## Endpoints
 
 - `POST /webhook` — Alertmanager webhook receiver (concurrent per-alert investigation; returns 200/500)
 - `GET /healthz` — Health check (returns 200 OK)
+- `GET /logs` — Annotation log viewer HTML page (only registered when both `LOG_FILE` and `VIEWER_AUTH_TOKEN` are set)
+- `GET /api/logs` — JSONL API for log entries with server-side filtering and cursor pagination (requires `Authorization: Bearer` token)
 
 ## Log Correlation
 

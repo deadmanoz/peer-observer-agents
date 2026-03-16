@@ -1,11 +1,13 @@
 mod annotation;
 mod prompt;
 mod rpc;
+mod viewer;
 
 use crate::annotation::{
-    html_escape, parse_structured_annotation, render_annotation_html, render_annotation_plaintext,
-    sanitize_log_field, strip_annotation_html, Verdict,
+    html_escape, parse_structured_annotation, render_annotation_html, strip_annotation_html,
+    Verdict,
 };
+use crate::viewer::{LogEntry, Telemetry};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
@@ -19,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap, env, fmt, net::SocketAddr, sync::Arc, time::Duration, time::Instant,
 };
+use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tokio::{fs::OpenOptions, io::AsyncWriteExt, process::Command};
 use tracing::{error, info, warn};
 
 /// Default HTTP client timeout for Grafana API calls.
@@ -150,6 +152,9 @@ struct AppState {
     cooldown: Duration,
     /// In-process state for cooldown suppression.
     cooldown_map: CooldownMap,
+    /// Bearer token for `/logs` and `/api/logs` viewer endpoints.
+    /// When `None`, viewer routes return 404.
+    viewer_auth_token: Option<String>,
 }
 
 // Alertmanager webhook payload types.
@@ -362,7 +367,12 @@ async fn main() -> Result<()> {
             );
             path
         },
-        log_file: env::var("ANNOTATION_AGENT_LOG_FILE").ok(),
+        log_file: env::var("ANNOTATION_AGENT_LOG_FILE")
+            .ok()
+            .filter(|v| !v.is_empty()),
+        viewer_auth_token: env::var("ANNOTATION_AGENT_VIEWER_AUTH_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty()),
         claude_timeout: Duration::from_secs(claude_timeout_secs),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(http_timeout_secs))
@@ -383,10 +393,20 @@ async fn main() -> Result<()> {
         );
     }
 
-    let app = Router::new()
+    let viewer_enabled = state.log_file.is_some() && state.viewer_auth_token.is_some();
+
+    let mut app = Router::new()
         .route("/healthz", get(healthz))
-        .route("/webhook", post(handle_webhook))
-        .with_state(state);
+        .route("/webhook", post(handle_webhook));
+
+    if viewer_enabled {
+        app = app
+            .route("/logs", get(viewer::logs_page))
+            .route("/api/logs", get(viewer::api_logs));
+        info!("viewer enabled at /logs and /api/logs");
+    }
+
+    let app = app.with_state(state);
 
     info!("annotation-agent listening on {listen_addr}");
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
@@ -475,14 +495,14 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
         .acquire()
         .await
         .context("investigation semaphore closed")?;
-    let raw_explanation = call_claude(state, alert, aid).await?;
+    let claude_output = call_claude(state, alert, aid).await?;
+    let telemetry = Telemetry::from(&claude_output);
 
-    match parse_structured_annotation(&raw_explanation) {
+    match parse_structured_annotation(&claude_output.result) {
         Ok(ann) => {
             let html = render_annotation_html(&ann);
-            let log_text = render_annotation_plaintext(&ann);
             post_grafana_annotation(state, alert, aid, &html, Some(&ann.verdict)).await?;
-            append_log(state, alert, &aid.alertname, &log_text).await;
+            append_log(state, alert, aid, Some(&ann), None, &telemetry).await;
             info!(alert_id = %aid, verdict = %ann.verdict, "annotation posted successfully");
         }
         Err(e) => {
@@ -491,10 +511,17 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
                 error = %e,
                 "failed to parse structured annotation, using raw text"
             );
-            let escaped = html_escape(&raw_explanation);
+            let escaped = html_escape(&claude_output.result);
             post_grafana_annotation(state, alert, aid, &escaped, None).await?;
-            let sanitized = sanitize_log_field(&raw_explanation);
-            append_log(state, alert, &aid.alertname, &sanitized).await;
+            append_log(
+                state,
+                alert,
+                aid,
+                None,
+                Some(&claude_output.result),
+                &telemetry,
+            )
+            .await;
             info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
         }
     }
@@ -515,29 +542,43 @@ async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result
     Ok(())
 }
 
-async fn append_log(state: &AppState, alert: &Alert, alertname: &str, explanation: &str) {
+async fn append_log(
+    state: &AppState,
+    alert: &Alert,
+    aid: &AlertId,
+    ann: Option<&annotation::StructuredAnnotation>,
+    raw_text: Option<&str>,
+    telemetry: &Telemetry,
+) {
     let Some(ref path) = state.log_file else {
         return;
     };
-    let host = alert
-        .labels
-        .get("host")
-        .cloned()
-        .unwrap_or_else(|| "unknown".to_string());
-    let safe_alertname = sanitize_log_field(alertname);
-    let safe_host = sanitize_log_field(&host);
-    let line = format_log_line(&alert.starts_at, &safe_alertname, &safe_host, explanation);
-    match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await
-    {
-        Ok(mut f) => {
-            let _ = f.write_all(line.as_bytes()).await;
-        }
-        Err(e) => warn!(path, "failed to write annotation log: {e}"),
-    }
+    let entry = match ann {
+        Some(ann) => LogEntry::structured(
+            alert.starts_at,
+            aid.to_string(),
+            aid.alertname.clone(),
+            aid.host.clone(),
+            aid.threadname.clone(),
+            ann.verdict.as_tag(),
+            ann.action.clone(),
+            ann.summary.clone(),
+            ann.cause.clone(),
+            ann.scope.clone(),
+            ann.evidence.clone(),
+            telemetry.clone(),
+        ),
+        None => LogEntry::raw_fallback(
+            alert.starts_at,
+            aid.to_string(),
+            aid.alertname.clone(),
+            aid.host.clone(),
+            aid.threadname.clone(),
+            raw_text.unwrap_or("").to_string(),
+            telemetry.clone(),
+        ),
+    };
+    viewer::append_jsonl_log(path, &entry).await;
 }
 
 /// Fetch recent AI annotations from Grafana to provide as context for the investigation.
@@ -617,7 +658,7 @@ fn format_prior_context(recent: &[GrafanaAnnotationResponse]) -> String {
 ///
 /// Claude has access to Prometheus via MCP and can autonomously query metrics,
 /// drill into per-peer data, and correlate across hosts to determine root cause.
-async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<String> {
+async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<ClaudeOutput> {
     // Fetch prior annotations and RPC data concurrently — they're independent
     // and can each take up to 30s (Grafana HTTP timeout) / 10s (RPC deadline).
     let host = alert
@@ -747,22 +788,22 @@ async fn call_claude(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<S
         anyhow::bail!("claude hit max turns limit without producing an annotation");
     }
 
-    Ok(parsed.result)
+    Ok(parsed)
 }
 
 /// Parsed Claude CLI JSON output with telemetry fields.
 #[derive(Debug)]
-struct ClaudeOutput {
-    result: String,
-    is_error: bool,
-    num_turns: u64,
-    duration_ms: u64,
-    duration_api_ms: u64,
-    cost_usd: f64,
-    input_tokens: u64,
-    output_tokens: u64,
-    stop_reason: String,
-    session_id: String,
+pub(crate) struct ClaudeOutput {
+    pub(crate) result: String,
+    pub(crate) is_error: bool,
+    pub(crate) num_turns: u64,
+    pub(crate) duration_ms: u64,
+    pub(crate) duration_api_ms: u64,
+    pub(crate) cost_usd: f64,
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) stop_reason: String,
+    pub(crate) session_id: String,
 }
 
 /// Parse Claude CLI JSON output into structured telemetry.
@@ -825,22 +866,6 @@ fn compute_annotation_time_end(time_ms: i64, ends_at: Option<DateTime<Utc>>) -> 
         .filter(|t| t.timestamp() > 0)
         .map(|t| t.timestamp_millis())
         .unwrap_or(time_ms)
-}
-
-/// Format a log line for the annotation log file.
-fn format_log_line(
-    starts_at: &DateTime<Utc>,
-    alertname: &str,
-    host: &str,
-    explanation: &str,
-) -> String {
-    format!(
-        "[{}] {} on {} — {}\n",
-        starts_at.format("%Y-%m-%d %H:%M:%S UTC"),
-        alertname,
-        host,
-        explanation,
-    )
 }
 
 async fn post_grafana_annotation(
@@ -949,6 +974,7 @@ mod tests {
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
+            viewer_auth_token: None,
         })
     }
 
@@ -1150,23 +1176,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Log line formatting ────────────────────────────────────────────
-
-    #[test]
-    fn format_log_line_basic() {
-        let ts = Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap();
-        let line = format_log_line(
-            &ts,
-            "PeerObserverBlockStale",
-            "bitcoin-03",
-            "No new block in 1 hour",
-        );
-        assert_eq!(
-            line,
-            "[2025-06-15 12:00:00 UTC] PeerObserverBlockStale on bitcoin-03 — No new block in 1 hour\n"
-        );
-    }
-
     // ── Prior context formatting ───────────────────────────────────────
 
     #[test]
@@ -1307,6 +1316,7 @@ mod tests {
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::from_secs(1800),
             cooldown_map: std::sync::Mutex::new(map),
+            viewer_auth_token: None,
         })
     }
 

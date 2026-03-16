@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annotation Log — peer-observer</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg-card: #161b22; --bg-hover: #1c2128;
+    --border: #30363d; --text: #c9d1d9; --text-muted: #8b949e;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --blue: #58a6ff; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+
+  /* Header */
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; font-weight: 600; white-space: nowrap; }
+  header .stats { font-size: 13px; color: var(--text-muted); }
+
+  /* Auth bar */
+  .auth-bar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
+  .auth-bar input { flex: 1; max-width: 400px; padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+  .auth-bar button, .controls button { padding: 6px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 13px; }
+  .auth-bar button:hover, .controls button:hover { background: var(--bg-hover); }
+
+  /* Filters */
+  .filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .filters select, .filters input { padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+  .filters select { min-width: 120px; }
+  .filters input[type="search"] { min-width: 200px; }
+  .controls { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+  .controls label { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; position: sticky; top: 0; background: var(--bg); white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border); cursor: pointer; }
+  tbody tr:hover { background: var(--bg-hover); }
+  tbody td { padding: 8px 10px; vertical-align: top; }
+  td.mono { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
+  td.num { text-align: right; font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
+
+  /* Verdict badges */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .badge-benign { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-investigate { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .badge-action_required { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-raw_fallback { background: rgba(188,140,255,0.15); color: var(--purple); }
+
+  /* Expanded row */
+  .detail-row td { padding: 12px 10px; background: var(--bg-card); }
+  .detail-row:hover { background: var(--bg-card); }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .detail-section h3 { font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+  .detail-section p, .detail-section li { font-size: 13px; }
+  .detail-section ul { padding-left: 16px; }
+  .detail-section .raw-text { white-space: pre-wrap; word-break: break-word; font-family: 'SF Mono', Consolas, monospace; font-size: 12px; background: var(--bg); padding: 8px; border-radius: 4px; border: 1px solid var(--border); max-height: 300px; overflow-y: auto; }
+  .telemetry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px; }
+  .telemetry-item { font-size: 12px; }
+  .telemetry-item .label { color: var(--text-muted); }
+
+  /* Loading / empty */
+  .status-msg { text-align: center; padding: 40px; color: var(--text-muted); }
+  .pagination { display: flex; justify-content: center; padding: 16px; }
+  .pagination button { padding: 8px 20px; }
+
+  /* Hidden */
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Annotation Log</h1>
+    <span class="stats" id="stats"></span>
+  </header>
+
+  <div class="auth-bar" id="auth-bar">
+    <input type="password" id="token-input" placeholder="Bearer token" autocomplete="off">
+    <button onclick="authenticate()">Connect</button>
+  </div>
+
+  <div class="filters hidden" id="filters-bar">
+    <select id="filter-verdict">
+      <option value="">All verdicts</option>
+      <option value="benign">Benign</option>
+      <option value="investigate">Investigate</option>
+      <option value="action_required">Action Required</option>
+    </select>
+    <select id="filter-host"><option value="">All hosts</option></select>
+    <select id="filter-alertname"><option value="">All alerts</option></select>
+    <select id="filter-threadname"><option value="">All threads</option></select>
+    <input type="search" id="search-input" placeholder="Search loaded results...">
+    <div class="controls">
+      <label><input type="checkbox" id="auto-refresh"> Auto-refresh</label>
+      <button onclick="loadLogs()">Refresh</button>
+    </div>
+  </div>
+
+  <div id="content">
+    <div class="status-msg" id="status">Enter your token to connect.</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  let TOKEN = '';
+  let ALL_ENTRIES = [];
+  let NEXT_CURSOR = null;
+  let EXPANDED = new Set();
+  let REFRESH_TIMER = null;
+
+  // Known hosts/alertnames/threadnames for filter dropdowns
+  let KNOWN_HOSTS = new Set();
+  let KNOWN_ALERTS = new Set();
+  let KNOWN_THREADS = new Set();
+
+  window.authenticate = function() {
+    TOKEN = document.getElementById('token-input').value.trim();
+    if (!TOKEN) return;
+    document.getElementById('auth-bar').classList.add('hidden');
+    document.getElementById('filters-bar').classList.remove('hidden');
+    loadLogs();
+  };
+
+  // Handle Enter key on token input
+  document.getElementById('token-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') authenticate();
+  });
+
+  window.loadLogs = async function(cursor) {
+    const status = document.getElementById('status');
+    const content = document.getElementById('content');
+
+    if (!cursor) {
+      status.textContent = 'Loading...';
+      content.innerHTML = '';
+      content.appendChild(status);
+    }
+
+    const params = new URLSearchParams();
+    const verdict = document.getElementById('filter-verdict').value;
+    const host = document.getElementById('filter-host').value;
+    const alertname = document.getElementById('filter-alertname').value;
+    const threadname = document.getElementById('filter-threadname').value;
+
+    if (verdict) params.set('verdict', verdict);
+    if (host) params.set('host', host);
+    if (alertname) params.set('alertname', alertname);
+    if (threadname) params.set('threadname', threadname);
+    params.set('limit', '200');
+    if (cursor) params.set('before_cursor', cursor);
+
+    try {
+      const resp = await fetch('/api/logs?' + params.toString(), {
+        headers: { 'Authorization': 'Bearer ' + TOKEN }
+      });
+
+      if (resp.status === 401) {
+        document.getElementById('auth-bar').classList.remove('hidden');
+        document.getElementById('filters-bar').classList.add('hidden');
+        status.textContent = 'Invalid token. Please try again.';
+        content.innerHTML = '';
+        content.appendChild(status);
+        return;
+      }
+      if (!resp.ok) {
+        status.textContent = 'Error: ' + resp.status;
+        return;
+      }
+
+      // Cursor is in the X-Next-Cursor response header
+      NEXT_CURSOR = resp.headers.get('x-next-cursor') || null;
+
+      const text = await resp.text();
+      const lines = text.trim().split('\n').filter(l => l.length > 0);
+
+      const entries = [];
+      for (const line of lines) {
+        try {
+          entries.push(JSON.parse(line));
+        } catch(e) { /* skip malformed */ }
+      }
+
+      if (!cursor) {
+        ALL_ENTRIES = entries;
+      } else {
+        ALL_ENTRIES = ALL_ENTRIES.concat(entries);
+      }
+
+      // Update known values for filters
+      for (const e of entries) {
+        if (e.host) KNOWN_HOSTS.add(e.host);
+        if (e.alertname) KNOWN_ALERTS.add(e.alertname);
+        if (e.threadname) KNOWN_THREADS.add(e.threadname);
+      }
+      updateFilterOptions();
+      renderTable();
+
+    } catch(e) {
+      status.textContent = 'Connection error: ' + e.message;
+    }
+  };
+
+  function updateFilterOptions() {
+    updateSelectOptions('filter-host', KNOWN_HOSTS, 'All hosts');
+    updateSelectOptions('filter-alertname', KNOWN_ALERTS, 'All alerts');
+    updateSelectOptions('filter-threadname', KNOWN_THREADS, 'All threads');
+  }
+
+  function updateSelectOptions(id, values, placeholder) {
+    const sel = document.getElementById(id);
+    const current = sel.value;
+    const sorted = Array.from(values).sort();
+    // Keep first option
+    while (sel.options.length > 1) sel.remove(1);
+    for (const v of sorted) {
+      if (!v) continue;
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      sel.appendChild(opt);
+    }
+    sel.value = current;
+  }
+
+  function renderTable() {
+    const content = document.getElementById('content');
+    const searchTerm = document.getElementById('search-input').value.toLowerCase();
+
+    // Client-side search filter
+    let filtered = ALL_ENTRIES;
+    if (searchTerm) {
+      filtered = ALL_ENTRIES.filter(e => {
+        const hay = JSON.stringify(e).toLowerCase();
+        return hay.includes(searchTerm);
+      });
+    }
+
+    document.getElementById('stats').textContent =
+      filtered.length + ' entries' + (filtered.length !== ALL_ENTRIES.length ? ' (filtered from ' + ALL_ENTRIES.length + ')' : '');
+
+    if (filtered.length === 0) {
+      content.innerHTML = '';
+      const msg = document.createElement('div');
+      msg.className = 'status-msg';
+      msg.textContent = ALL_ENTRIES.length === 0 ? 'No entries found.' : 'No entries match your search.';
+      content.appendChild(msg);
+      return;
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    const cols = ['Logged', 'Alert Start', 'Alert', 'Host', 'Thread', 'Verdict', 'Summary', 'Cost', 'Turns', 'Duration'];
+    for (const col of cols) {
+      const th = document.createElement('th');
+      th.textContent = col;
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    for (let i = 0; i < filtered.length; i++) {
+      const entry = filtered[i];
+      const row = document.createElement('tr');
+      row.addEventListener('click', () => toggleExpand(entry.alert_id + ':' + entry.logged_at, tbody, row, entry));
+
+      addCell(row, formatTime(entry.logged_at), 'mono');
+      addCell(row, formatTime(entry.alert_starts_at), 'mono');
+      addCell(row, entry.alertname || '', '');
+      addCell(row, entry.host || '', '');
+      addCell(row, entry.threadname || '', '');
+
+      // Verdict badge
+      const vtd = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      if (entry.entry_kind === 'raw_fallback') {
+        badge.classList.add('badge-raw_fallback');
+        badge.textContent = 'RAW';
+      } else {
+        const v = entry.verdict || 'unknown';
+        badge.classList.add('badge-' + v);
+        badge.textContent = v.replace('_', ' ');
+      }
+      vtd.appendChild(badge);
+      row.appendChild(vtd);
+
+      addCell(row, entry.summary || (entry.raw_text ? entry.raw_text.substring(0, 80) + '...' : ''), '');
+      addCell(row, entry.telemetry ? '$' + entry.telemetry.cost_usd.toFixed(3) : '', 'num');
+      addCell(row, entry.telemetry ? String(entry.telemetry.num_turns) : '', 'num');
+      addCell(row, entry.telemetry ? formatDuration(entry.telemetry.duration_ms) : '', 'num');
+
+      tbody.appendChild(row);
+
+      // Render expanded detail if open
+      const expandKey = entry.alert_id + ':' + entry.logged_at;
+      if (EXPANDED.has(expandKey)) {
+        tbody.appendChild(buildDetailRow(entry, cols.length));
+      }
+    }
+    table.appendChild(tbody);
+
+    content.innerHTML = '';
+    content.appendChild(table);
+
+    // Pagination
+    if (NEXT_CURSOR) {
+      const pagDiv = document.createElement('div');
+      pagDiv.className = 'pagination';
+      const btn = document.createElement('button');
+      btn.textContent = 'Load more';
+      btn.addEventListener('click', () => loadLogs(NEXT_CURSOR));
+      pagDiv.appendChild(btn);
+      content.appendChild(pagDiv);
+    }
+  }
+
+  function addCell(row, text, cls) {
+    const td = document.createElement('td');
+    if (cls) td.className = cls;
+    td.textContent = text;
+    row.appendChild(td);
+  }
+
+  function toggleExpand(key, tbody, afterRow, entry) {
+    if (EXPANDED.has(key)) {
+      EXPANDED.delete(key);
+      const next = afterRow.nextElementSibling;
+      if (next && next.classList.contains('detail-row')) {
+        next.remove();
+      }
+    } else {
+      EXPANDED.add(key);
+      const detailRow = buildDetailRow(entry, 10);
+      afterRow.after(detailRow);
+    }
+  }
+
+  function buildDetailRow(entry, colSpan) {
+    const tr = document.createElement('tr');
+    tr.className = 'detail-row';
+    const td = document.createElement('td');
+    td.colSpan = colSpan;
+
+    if (entry.entry_kind === 'raw_fallback') {
+      const section = document.createElement('div');
+      section.className = 'detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = 'Raw Claude Output';
+      section.appendChild(h3);
+      const pre = document.createElement('div');
+      pre.className = 'raw-text';
+      // XSS safety: textContent only, never innerHTML
+      pre.textContent = entry.raw_text || '';
+      section.appendChild(pre);
+      td.appendChild(section);
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'detail-grid';
+
+      // Left column: annotation content
+      const left = document.createElement('div');
+
+      const causeSection = makeSection('Cause', entry.cause);
+      left.appendChild(causeSection);
+
+      const scopeSection = makeSection('Scope', entry.scope);
+      left.appendChild(scopeSection);
+
+      if (entry.action) {
+        const actionSection = makeSection('Action', entry.action);
+        left.appendChild(actionSection);
+      }
+
+      if (entry.evidence && entry.evidence.length > 0) {
+        const evSection = document.createElement('div');
+        evSection.className = 'detail-section';
+        const h3 = document.createElement('h3');
+        h3.textContent = 'Evidence';
+        evSection.appendChild(h3);
+        const ul = document.createElement('ul');
+        for (const item of entry.evidence) {
+          const li = document.createElement('li');
+          li.textContent = item;
+          ul.appendChild(li);
+        }
+        evSection.appendChild(ul);
+        left.appendChild(evSection);
+      }
+
+      grid.appendChild(left);
+
+      // Right column: telemetry + metadata
+      const right = document.createElement('div');
+
+      const metaSection = document.createElement('div');
+      metaSection.className = 'detail-section';
+      const h3m = document.createElement('h3');
+      h3m.textContent = 'Metadata';
+      metaSection.appendChild(h3m);
+      const metaGrid = document.createElement('div');
+      metaGrid.className = 'telemetry-grid';
+      addTelemetryItem(metaGrid, 'Alert ID', entry.alert_id);
+      addTelemetryItem(metaGrid, 'Entry Kind', entry.entry_kind);
+      metaSection.appendChild(metaGrid);
+      right.appendChild(metaSection);
+
+      if (entry.telemetry) {
+        const telSection = document.createElement('div');
+        telSection.className = 'detail-section';
+        const h3t = document.createElement('h3');
+        h3t.textContent = 'Telemetry';
+        telSection.appendChild(h3t);
+        const telGrid = document.createElement('div');
+        telGrid.className = 'telemetry-grid';
+        addTelemetryItem(telGrid, 'Cost', '$' + entry.telemetry.cost_usd.toFixed(4));
+        addTelemetryItem(telGrid, 'Turns', entry.telemetry.num_turns);
+        addTelemetryItem(telGrid, 'Duration', formatDuration(entry.telemetry.duration_ms));
+        addTelemetryItem(telGrid, 'API Time', formatDuration(entry.telemetry.duration_api_ms));
+        addTelemetryItem(telGrid, 'Input Tokens', entry.telemetry.input_tokens.toLocaleString());
+        addTelemetryItem(telGrid, 'Output Tokens', entry.telemetry.output_tokens.toLocaleString());
+        addTelemetryItem(telGrid, 'Stop Reason', entry.telemetry.stop_reason);
+        addTelemetryItem(telGrid, 'Session ID', entry.telemetry.session_id);
+        telSection.appendChild(telGrid);
+        right.appendChild(telSection);
+      }
+
+      grid.appendChild(right);
+      td.appendChild(grid);
+    }
+
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function makeSection(title, text) {
+    const div = document.createElement('div');
+    div.className = 'detail-section';
+    const h3 = document.createElement('h3');
+    h3.textContent = title;
+    div.appendChild(h3);
+    const p = document.createElement('p');
+    p.textContent = text || '';
+    div.appendChild(p);
+    return div;
+  }
+
+  function addTelemetryItem(container, label, value) {
+    const div = document.createElement('div');
+    div.className = 'telemetry-item';
+    const span = document.createElement('span');
+    span.className = 'label';
+    span.textContent = label + ': ';
+    div.appendChild(span);
+    div.appendChild(document.createTextNode(String(value)));
+    container.appendChild(div);
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+  }
+
+  function formatDuration(ms) {
+    if (!ms) return '0s';
+    if (ms < 1000) return ms + 'ms';
+    const s = (ms / 1000).toFixed(1);
+    return s + 's';
+  }
+
+  // Debounced search
+  let searchTimeout;
+  document.getElementById('search-input').addEventListener('input', function() {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(renderTable, 200);
+  });
+
+  // Filter change handlers — reload from server
+  for (const id of ['filter-verdict', 'filter-host', 'filter-alertname', 'filter-threadname']) {
+    document.getElementById(id).addEventListener('change', function() {
+      NEXT_CURSOR = null;
+      loadLogs();
+    });
+  }
+
+  // Auto-refresh toggle
+  document.getElementById('auto-refresh').addEventListener('change', function() {
+    if (this.checked) {
+      REFRESH_TIMER = setInterval(() => loadLogs(), 30000);
+    } else {
+      clearInterval(REFRESH_TIMER);
+      REFRESH_TIMER = null;
+    }
+  });
+
+})();
+</script>
+</body>
+</html>
