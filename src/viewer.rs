@@ -349,12 +349,10 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
 }
 
 /// Constant-time byte slice comparison to prevent timing side-channels.
-/// Always compares all bytes regardless of where (or whether) they differ.
+/// Folds the length mismatch into the accumulator rather than short-circuiting,
+/// so the only timing signal is "lengths differ" (not the expected length).
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut acc = 0u8;
+    let mut acc = if a.len() == b.len() { 0u8 } else { 1u8 };
     for (x, y) in a.iter().zip(b.iter()) {
         acc |= x ^ y;
     }
@@ -425,6 +423,11 @@ pub(crate) async fn api_logs(
 
         // Apply before_cursor filter — uses the same (logged_at, alert_id)
         // total order as the heap key, so cursor semantics are consistent.
+        // INVARIANT: (logged_at, alert_id) must be unique across entries.
+        // logged_at is Utc::now() at append time (nanosecond resolution) and
+        // alert_id includes startsAt, so duplicates are vanishingly unlikely
+        // in normal operation. If a duplicate exists, one occurrence will be
+        // silently excluded from pagination.
         if let Some((ref cursor_ts, ref cursor_id)) = before {
             if (entry.logged_at, &entry.alert_id) >= (*cursor_ts, cursor_id) {
                 continue;
@@ -510,10 +513,17 @@ pub(crate) async fn api_logs(
 // ── HTML page: GET /logs ────────────────────────────────────────────
 
 /// `GET /logs` — serves the self-contained HTML log viewer.
+///
+/// Intentionally unauthenticated: the HTML shell contains no investigation data.
+/// The bearer token is entered client-side and passed via `Authorization` header
+/// on `/api/logs` fetch calls. This means unauthenticated visitors can see that
+/// the viewer exists and learn the API endpoint URL, but cannot access log data
+/// without a valid token.
 pub(crate) async fn logs_page(
     State(state): State<Arc<AppState>>,
 ) -> Result<Html<&'static str>, StatusCode> {
-    // Only serve if viewer is enabled (both log file and auth token configured)
+    // Feature gate: only serve when both log file and auth token are configured.
+    // This is NOT an auth check — see doc comment above.
     if state.viewer_auth_token.is_none() || state.log_file.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
