@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use prompt::AlertContext;
+use prompt::{strip_control_chars, AlertContext};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap, env, fmt, net::SocketAddr, sync::Arc, time::Duration, time::Instant,
@@ -209,7 +209,7 @@ impl AlertId {
             threadname: alert
                 .labels
                 .get("threadname")
-                .map(|t| t.chars().filter(|c| !c.is_control()).collect())
+                .map(|t| strip_control_chars(t))
                 .unwrap_or_default(),
             started: alert.starts_at,
         }

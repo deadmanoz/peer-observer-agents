@@ -45,7 +45,7 @@ impl AlertContext {
                 .unwrap_or_else(|| "unknown".to_string()),
             threadname: labels
                 .get("threadname")
-                .map(|t| t.chars().filter(|c| !c.is_control()).collect())
+                .map(|t| strip_control_chars(t))
                 .unwrap_or_default(),
             severity: labels
                 .get("severity")
@@ -64,6 +64,13 @@ impl AlertContext {
             rpc_fetched_at,
         }
     }
+}
+
+/// Strip control characters from a label value (threadname, etc.).
+/// Used at construction time in both `AlertId` and `AlertContext` to ensure
+/// consistent sanitized values across the identity and prompt pipelines.
+pub(crate) fn strip_control_chars(input: &str) -> String {
+    input.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Sanitize untrusted text by escaping angle brackets to prevent XML-like tag
