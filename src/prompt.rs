@@ -43,7 +43,10 @@ impl AlertContext {
                 .get("host")
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string()),
-            threadname: labels.get("threadname").cloned().unwrap_or_default(),
+            threadname: labels
+                .get("threadname")
+                .map(|t| t.chars().filter(|c| !c.is_control()).collect())
+                .unwrap_or_default(),
             severity: labels
                 .get("severity")
                 .cloned()
@@ -529,7 +532,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
             ).into()
         }
 
-        "PeerObserverThreadSaturation" if pq_threadname.is_empty() => {
+        "PeerObserverThreadSaturation" if threadname.is_empty() => {
             "The alert was fired without a `threadname` label. \
              Investigation cannot proceed without it — the threadname \
              is required to query per-thread CPU metrics. \
@@ -871,11 +874,23 @@ mod tests {
 
     #[test]
     fn thread_saturation_with_control_char_only_threadname_gets_guard() {
-        let prompt = build_investigation_prompt(&AlertContext {
-            alertname: "PeerObserverThreadSaturation".into(),
-            threadname: "\n\t".into(),
-            ..default_ctx()
-        });
+        // Control-char-only threadnames are stripped to empty by from_alert,
+        // but test the guard path directly via manual construction.
+        let mut labels = HashMap::new();
+        labels.insert("alertname".into(), "PeerObserverThreadSaturation".into());
+        labels.insert("host".into(), "bitcoin-03".into());
+        labels.insert("threadname".into(), "\n\t".into());
+        let ctx = AlertContext::from_alert(
+            &labels,
+            &None,
+            test_time(),
+            String::new(),
+            String::new(),
+            None,
+        );
+        // from_alert strips control chars → threadname becomes empty
+        assert!(ctx.threadname.is_empty());
+        let prompt = build_investigation_prompt(&ctx);
         assert!(prompt.contains("fired without a `threadname` label"));
     }
 
