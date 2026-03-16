@@ -529,9 +529,16 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
             ).into()
         }
 
+        "PeerObserverThreadSaturation" if pq_threadname.is_empty() => {
+            "The alert was fired without a `threadname` label. \
+             Investigation cannot proceed without it — the threadname \
+             is required to query per-thread CPU metrics. \
+             Check the Alertmanager rule configuration.".into()
+        }
+
         "PeerObserverThreadSaturation" => {
             format!(
-                r#"1. Confirm saturation with PromQL: query `sum by(host, threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname="{pq_threadname}"}}[5m]))` — the `sum by` collapses user+system CPU. A value near 1.0 confirms 100% of one CPU core. If this query returns empty data, check that the alert was fired with a `threadname` label — the confirmation step cannot proceed without it.
+                r#"1. Confirm saturation with PromQL: query `sum by(host, threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname="{pq_threadname}"}}[5m]))` — the `sum by` collapses user+system CPU. A value near 1.0 confirms 100% of one CPU core.
 2. Check IBD status via pre-fetched `getblockchaininfo` RPC data (look for the `initialblockdownload` field). Thread saturation during IBD is expected — all threads work harder during initial sync.
 3. Thread role context: b-msghand (message processing — the most common bottleneck; saturates during mass-broadcast events like large inv floods), b-net (network I/O — saturates under high peer count or bandwidth), b-addcon/b-opencon (connection management), b-scheduler (task scheduling), b-scriptch.N (script verification — CPU-intensive during block validation and catchup), bitcoind (main thread — typically low CPU outside startup).
 4. Check for correlated events: query message rates (`peerobserver_p2p_message_count`), block events (`peerobserver_validation_block_connected_latest_height`), and connection changes to identify what triggered the saturation.
@@ -841,6 +848,29 @@ mod tests {
     }
 
     #[test]
+    fn thread_saturation_without_threadname_gets_guard_message() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverThreadSaturation".into(),
+            threadname: String::new(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("fired without a `threadname` label"));
+        assert!(!prompt.contains("Confirm saturation with PromQL"));
+    }
+
+    #[test]
+    fn thread_saturation_with_threadname_gets_full_instructions() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverThreadSaturation".into(),
+            threadname: "b-msghand".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Confirm saturation with PromQL"));
+        assert!(prompt.contains(r#"threadname="b-msghand""#));
+        assert!(!prompt.contains("fired without a `threadname` label"));
+    }
+
+    #[test]
     fn prompt_contains_alert_details() {
         let prompt = build_investigation_prompt(&AlertContext {
             alertname: "PeerObserverBlockStale".into(),
@@ -1008,7 +1038,7 @@ mod tests {
             ),
             (
                 "PeerObserverThreadSaturation",
-                "Confirm saturation with PromQL",
+                "fired without a `threadname` label",
             ),
             (
                 "PeerObserverAnomalyDetectionDown",
