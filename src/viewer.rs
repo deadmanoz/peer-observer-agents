@@ -783,9 +783,13 @@ mod tests {
 
     #[tokio::test]
     async fn append_and_read_jsonl() {
-        let dir = std::env::temp_dir().join(format!("peer-observer-test-{}", std::process::id()));
-        let _ = tokio::fs::create_dir_all(&dir).await;
-        let path = dir.join("test.jsonl");
+        // Use a unique temp file to avoid interference between parallel
+        // test runs in sandboxed CI (Nix build sandbox).
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "peer-observer-jsonl-test-{}-append.jsonl",
+            std::process::id()
+        ));
         let path_str = path.to_str().unwrap();
 
         // Clean up any previous test file
@@ -800,7 +804,13 @@ mod tests {
         // Read back and verify
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 2 JSONL lines, got {}: {:?}",
+            lines.len(),
+            contents
+        );
 
         let parsed1: LogEntry = serde_json::from_str(lines[0]).unwrap();
         let parsed2: LogEntry = serde_json::from_str(lines[1]).unwrap();
@@ -809,7 +819,6 @@ mod tests {
 
         // Cleanup
         let _ = tokio::fs::remove_file(&path).await;
-        let _ = tokio::fs::remove_dir(&dir).await;
     }
 
     // ── API handler (integration test with axum) ────────────────────
