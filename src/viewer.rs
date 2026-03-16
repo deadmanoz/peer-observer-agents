@@ -202,10 +202,12 @@ fn decode_cursor(cursor: &str) -> Option<(DateTime<Utc>, String)> {
     Some((ts, alert_id.to_string()))
 }
 
-/// Simple base64 encoding without pulling in a crate.
-/// Uses the standard alphabet (A-Z, a-z, 0-9, +, /) with = padding.
+/// URL-safe base64 encoding without pulling in a crate.
+/// Uses the URL-safe alphabet (A-Z, a-z, 0-9, -, _) with no padding,
+/// so the output is safe to embed directly in URL query parameters
+/// without percent-encoding.
 fn base64_encode(input: &str) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -217,13 +219,9 @@ fn base64_encode(input: &str) -> String {
         out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
         if chunk.len() > 1 {
             out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
         }
         if chunk.len() > 2 {
             out.push(ALPHABET[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
         }
     }
     out
@@ -232,7 +230,7 @@ fn base64_encode(input: &str) -> String {
 fn base64_decode(input: &str) -> Option<String> {
     const DECODE: [u8; 128] = {
         let mut table = [255u8; 128];
-        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let mut i = 0;
         while i < 64 {
             table[alphabet[i] as usize] = i as u8;
@@ -451,7 +449,10 @@ pub(crate) async fn api_logs(
             }
         }
 
-        // Apply server-side filters
+        // Apply server-side filters.
+        // NOTE: verdict filter intentionally excludes raw_fallback entries
+        // (which have verdict: None) when any verdict is selected. Raw
+        // fallback entries are only visible when no verdict filter is set.
         if let Some(ref v) = query.verdict {
             match &entry.verdict {
                 Some(ev) if ev == v => {}
