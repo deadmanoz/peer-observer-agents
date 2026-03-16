@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "peer-observer-agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
