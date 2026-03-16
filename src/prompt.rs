@@ -69,8 +69,11 @@ impl AlertContext {
 /// Strip control characters from a label value (threadname, etc.).
 /// Used at construction time in both `AlertId` and `AlertContext` to ensure
 /// consistent sanitized values across the identity and prompt pipelines.
+/// Also trims leading/trailing whitespace so whitespace-only values
+/// become empty (consistent with the empty-threadname guard).
 pub(crate) fn strip_control_chars(input: &str) -> String {
-    input.chars().filter(|c| !c.is_control()).collect()
+    let stripped: String = input.chars().filter(|c| !c.is_control()).collect();
+    stripped.trim().to_string()
 }
 
 /// Sanitize untrusted text by escaping angle brackets to prevent XML-like tag
