@@ -293,7 +293,7 @@
       vtd.appendChild(badge);
       row.appendChild(vtd);
 
-      addCell(row, entry.summary || (entry.raw_text ? entry.raw_text.substring(0, 80) + '...' : ''), '');
+      addCell(row, entry.summary || (entry.raw_text ? (entry.raw_text.length > 80 ? entry.raw_text.substring(0, 80) + '...' : entry.raw_text) : ''), '');
       addCell(row, entry.telemetry ? '$' + entry.telemetry.cost_usd.toFixed(3) : '', 'num');
       addCell(row, entry.telemetry ? String(entry.telemetry.num_turns) : '', 'num');
       addCell(row, entry.telemetry ? formatDuration(entry.telemetry.duration_ms) : '', 'num');

@@ -255,7 +255,7 @@ fn base64_decode(input: &str) -> Option<String> {
     }
     for chunk in chars.chunks(4) {
         if chunk.len() < 2 {
-            break;
+            return None; // len % 4 == 1 is invalid base64
         }
         let b0 = (chunk[0] as u32) << 18
             | (chunk[1] as u32) << 12
