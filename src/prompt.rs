@@ -174,7 +174,7 @@ pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     // internally. Passing an already-XML-sanitized value would cause
     // double-encoding in both paths (e.g., `&amp;` → `&amp;amp;` in text,
     // and `foo&amp;bar` used as PromQL label instead of `foo&bar`).
-    let investigation = investigation_instructions(alertname, category, host, started);
+    let investigation = investigation_instructions(alertname, category, host, threadname, started);
 
     let prior_section = if s_prior_context.is_empty() {
         String::new()
@@ -290,6 +290,7 @@ fn investigation_instructions(
     alertname: &str,
     category: &str,
     host: &str,
+    threadname: &str,
     started: &DateTime<Utc>,
 ) -> String {
     let query_tip = format!(
@@ -301,6 +302,7 @@ fn investigation_instructions(
     let s_host = sanitize_host_for_prompt(host);
     // Separately sanitize for PromQL label selectors (escape `"` and `\`).
     let pq_host = sanitize_promql_label(host);
+    let pq_threadname = sanitize_promql_label(threadname);
 
     let fast_path_preamble = fast_path_spec(alertname).map(|spec| {
         let (band_metric, condition, resolved_when) = match spec.band {
@@ -529,7 +531,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 
         "PeerObserverThreadSaturation" => {
             format!(
-                r#"1. Identify the saturated thread from the `threadname` field in Alert Details above. Confirm with PromQL: query `sum by(host, threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname="<threadname>"}}[5m]))` — the `sum by` collapses user+system CPU. A value near 1.0 confirms 100% of one CPU core.
+                r#"1. Confirm saturation with PromQL: query `sum by(host, threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname="{pq_threadname}"}}[5m]))` — the `sum by` collapses user+system CPU. A value near 1.0 confirms 100% of one CPU core.
 2. Check IBD status via pre-fetched `getblockchaininfo` RPC data (look for the `initialblockdownload` field). Thread saturation during IBD is expected — all threads work harder during initial sync.
 3. Thread role context: b-msghand (message processing — the most common bottleneck; saturates during mass-broadcast events like large inv floods), b-net (network I/O — saturates under high peer count or bandwidth), b-addcon/b-opencon (connection management), b-scheduler (task scheduling), bitcoind (main thread — typically low CPU outside startup).
 4. Check for correlated events: query message rates (`peerobserver_p2p_message_count`), block events (`peerobserver_validation_block_connected_latest_height`), and connection changes to identify what triggered the saturation.
@@ -1006,7 +1008,7 @@ mod tests {
             ),
             (
                 "PeerObserverThreadSaturation",
-                "saturated thread from the `threadname` field",
+                "Confirm saturation with PromQL",
             ),
             (
                 "PeerObserverAnomalyDetectionDown",
