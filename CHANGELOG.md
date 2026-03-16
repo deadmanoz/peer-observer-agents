@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Annotation log viewer: `/logs` HTML page and `/api/logs` JSON API for browsing investigation history with filtering, pagination, and search
+- JSONL log format replacing the previous pipe-delimited plaintext format, with dual timestamps (`logged_at` for ordering, `alert_starts_at` for context), full structured annotation fields, and Claude telemetry (cost, tokens, turns, duration)
+- `ANNOTATION_AGENT_VIEWER_AUTH_TOKEN` env var — viewer endpoints are only registered when both this and `ANNOTATION_AGENT_LOG_FILE` are set
+- Bearer token authentication on `/api/logs`
+- Server-side filtering by verdict, host, alertname, and threadname with composite cursor pagination
+
+### Changed
+
+- **BREAKING**: `ANNOTATION_AGENT_LOG_FILE` now writes JSONL format instead of pipe-delimited plaintext. Existing log files must be deleted or rotated before upgrade — the new format is incompatible with the old one.
+- Removed `render_annotation_plaintext` and `sanitize_log_field` (superseded by JSONL serialization)
+
 ## [0.4.0] - 2026-03-16
 
 ### Added

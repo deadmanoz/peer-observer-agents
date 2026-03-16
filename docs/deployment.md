@@ -23,6 +23,7 @@ This service is designed for deployment on trusted internal networks behind a re
 - **`--dangerously-skip-permissions`**: Claude CLI is invoked with this flag to enable autonomous MCP tool use. This is required for unattended operation but means the Claude process has unrestricted tool access. The MCP config should only expose the Prometheus read API.
 - **Cooldown suppression**: Before invoking Claude, in-process cooldown suppression coalesces retriggers of the same `(alertname, host, threadname)` within a configurable window (`ANNOTATION_AGENT_COOLDOWN_SECS`, default 30 minutes). An RAII `CooldownGuard` manages state transitions — successful investigations (Claude + Grafana post) mark the entry as completed, while failures or panics clear the entry so Alertmanager retries are not suppressed. State does not survive process restarts.
 - **Grafana idempotency**: After investigation, duplicate annotations are prevented by checking Grafana for existing annotations (±1s around `startsAt`) before posting. If Alertmanager retries a webhook after a partial failure, already-posted annotations will be skipped.
+- **Viewer authentication**: The `/logs` and `/api/logs` endpoints are only registered when both `ANNOTATION_AGENT_LOG_FILE` and `ANNOTATION_AGENT_VIEWER_AUTH_TOKEN` are configured. `/api/logs` requires `Authorization: Bearer <token>` — requests without a valid token receive 401. The `/logs` HTML page is served without authentication (it accepts the token client-side and passes it via `Authorization` header on API calls). Investigation logs may contain peer-level IP attribution when RPC pre-fetch is enabled, so the viewer should not be exposed without authentication. The bearer token is held in memory for the page session — when auto-refresh is enabled, the token remains live while the tab is open. Treat viewer sessions as long-lived credentials.
 
 ## Health Endpoint
 
@@ -58,7 +59,8 @@ All config via environment variables prefixed `ANNOTATION_AGENT_*`:
 | `ANNOTATION_AGENT_CLAUDE_BIN` | `claude` | Path to Claude CLI binary |
 | `ANNOTATION_AGENT_CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model to use for investigations |
 | `ANNOTATION_AGENT_MCP_CONFIG` | (required) | Path to MCP config JSON for Prometheus |
-| `ANNOTATION_AGENT_LOG_FILE` | (optional) | Path to append plain-text annotation log |
+| `ANNOTATION_AGENT_LOG_FILE` | (optional) | Path to append JSONL annotation log (one JSON object per line) |
+| `ANNOTATION_AGENT_VIEWER_AUTH_TOKEN` | (optional) | Bearer token for `/logs` and `/api/logs` viewer endpoints. Viewer routes are only registered when both this and `LOG_FILE` are set. |
 | `ANNOTATION_AGENT_HTTP_TIMEOUT_SECS` | `30` | HTTP client timeout for Grafana API calls |
 | `ANNOTATION_AGENT_CLAUDE_TIMEOUT_SECS` | `600` | Max wall-clock time for a Claude CLI investigation |
 | `ANNOTATION_AGENT_MAX_CONCURRENT` | `4` | Max concurrent Claude investigations (values below 1 are coerced to 1) |

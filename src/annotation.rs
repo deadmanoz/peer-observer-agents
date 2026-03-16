@@ -242,36 +242,6 @@ pub(crate) fn render_annotation_html(ann: &StructuredAnnotation) -> String {
     )
 }
 
-/// Replace characters that would break the single-line pipe-delimited log format.
-pub(crate) fn sanitize_log_field(s: &str) -> String {
-    s.replace(['\n', '\r', '\t'], " ").replace('|', "/")
-}
-
-/// Render a structured annotation as a single-line pipe-delimited string for the log file.
-pub(crate) fn render_annotation_plaintext(ann: &StructuredAnnotation) -> String {
-    let action = ann
-        .action
-        .as_deref()
-        .map(str::trim)
-        .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("none"))
-        .unwrap_or("none");
-    let evidence: String = ann
-        .evidence
-        .iter()
-        .map(|e| sanitize_log_field(e.trim()))
-        .collect::<Vec<_>>()
-        .join("; ");
-    format!(
-        "VERDICT: {} | ACTION: {} | SUMMARY: {} | CAUSE: {} | SCOPE: {} | EVIDENCE: {}",
-        ann.verdict.display_label(),
-        sanitize_log_field(action.trim()),
-        sanitize_log_field(ann.summary.trim()),
-        sanitize_log_field(ann.cause.trim()),
-        sanitize_log_field(ann.scope.trim()),
-        evidence,
-    )
-}
-
 /// Strip HTML tags and entities produced by `render_annotation_html` for use in prompts.
 /// Only handles the specific markup we generate — not a general-purpose HTML stripper.
 ///
@@ -679,71 +649,6 @@ mod tests {
         assert!(html.contains("<b>SUMMARY:</b> padded summary<br>"));
         assert!(html.contains("<b>CAUSE:</b> padded cause<br>"));
         assert!(html.contains("&bull; padded evidence<br>"));
-    }
-
-    // ── Plaintext rendering ───────────────────────────────────────────
-
-    #[test]
-    fn render_plaintext_single_line() {
-        let ann = parse_structured_annotation(benign_json()).unwrap();
-        let text = render_annotation_plaintext(&ann);
-        assert!(!text.contains('\n'), "plaintext must be single-line");
-        assert!(!text.contains('\r'), "plaintext must not contain \\r");
-        assert!(text.starts_with("VERDICT: BENIGN"));
-        assert!(text.contains("| ACTION: none |"));
-        assert!(text.contains("| SUMMARY:"));
-        assert!(text.contains("| EVIDENCE:"));
-    }
-
-    #[test]
-    fn render_plaintext_action_required() {
-        let ann = parse_structured_annotation(action_required_json()).unwrap();
-        let text = render_annotation_plaintext(&ann);
-        assert!(text.contains("VERDICT: ACTION REQUIRED"));
-        assert!(text.contains("| ACTION: run getpeerinfo"));
-    }
-
-    // ── Log field sanitization ────────────────────────────────────────
-
-    #[test]
-    fn sanitize_log_field_strips_newlines() {
-        assert_eq!(sanitize_log_field("line1\nline2"), "line1 line2");
-        assert_eq!(sanitize_log_field("line1\r\nline2"), "line1  line2");
-    }
-
-    #[test]
-    fn sanitize_log_field_replaces_pipe() {
-        assert_eq!(sanitize_log_field("a | b"), "a / b");
-    }
-
-    #[test]
-    fn sanitize_log_field_strips_tabs() {
-        assert_eq!(sanitize_log_field("col1\tcol2\tcol3"), "col1 col2 col3");
-    }
-
-    #[test]
-    fn sanitize_log_field_preserves_normal_text() {
-        assert_eq!(sanitize_log_field("normal text"), "normal text");
-    }
-
-    #[test]
-    fn render_plaintext_sanitizes_multiline_fields() {
-        let json = r#"{
-            "verdict": "benign",
-            "summary": "line1\nline2",
-            "cause": "cause with\nnewline",
-            "scope": "scope | piped",
-            "evidence": ["evidence\nwith\nnewlines", "normal"]
-        }"#;
-        let ann = parse_structured_annotation(json).unwrap();
-        let text = render_annotation_plaintext(&ann);
-        assert!(
-            !text.contains('\n'),
-            "plaintext must be single-line after sanitization"
-        );
-        // Pipes in fields are replaced so they don't break delimiters
-        assert!(!text.contains("scope | piped"));
-        assert!(text.contains("scope / piped"));
     }
 
     // ── HTML stripping ────────────────────────────────────────────────
