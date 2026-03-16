@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-03-16
+
+### Added
+
+- Auto-detect reverse proxy auth in viewer — when deployed behind nginx with injected Authorization headers, the viewer skips the token input and loads data immediately
+
+### Fixed
+
+- Flush JSONL writes explicitly to prevent data loss on async file handle drop
+
 ## [0.5.0] - 2026-03-16
 
 ### Added
