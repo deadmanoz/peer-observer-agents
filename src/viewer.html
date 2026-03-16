@@ -116,7 +116,9 @@
   let EXPANDED = new Set();
   let REFRESH_TIMER = null;
 
-  // Known hosts/alertnames/threadnames for filter dropdowns
+  // Known hosts/alertnames/threadnames for filter dropdowns.
+  // These accumulate across ALL responses (never cleared) so that
+  // applying a filter doesn't strip options from other dropdowns.
   let KNOWN_HOSTS = new Set();
   let KNOWN_ALERTS = new Set();
   let KNOWN_THREADS = new Set();
@@ -124,6 +126,13 @@
   // When behind a reverse proxy that injects Authorization headers,
   // PROXY_AUTH is true and TOKEN stays empty (the proxy handles auth).
   let PROXY_AUTH = false;
+
+  // Monotonic request ID to discard stale responses.  Each loadLogs()
+  // call increments this; when the response arrives, it checks that
+  // its ID still matches the latest — otherwise it was superseded by
+  // a newer request (e.g. user changed a filter while initial load
+  // was still in flight) and the response is silently dropped.
+  let REQUEST_ID = 0;
 
   window.authenticate = function() {
     TOKEN = document.getElementById('token-input').value.trim();
@@ -156,6 +165,10 @@
     const status = document.getElementById('status');
     const content = document.getElementById('content');
 
+    // Claim a new request ID; any in-flight response with an older
+    // ID will be discarded when it arrives.
+    const myRequestId = ++REQUEST_ID;
+
     if (!cursor) {
       status.textContent = 'Loading...';
       content.innerHTML = '';
@@ -179,6 +192,10 @@
       const fetchOpts = PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
       const resp = await fetch('/api/logs?' + params.toString(), fetchOpts);
 
+      // Stale response — a newer loadLogs() call was made while this
+      // one was in flight.  Discard silently.
+      if (myRequestId !== REQUEST_ID) return;
+
       if (resp.status === 401) {
         clearInterval(REFRESH_TIMER);
         REFRESH_TIMER = null;
@@ -199,6 +216,11 @@
       NEXT_CURSOR = resp.headers.get('x-next-cursor') || null;
 
       const text = await resp.text();
+
+      // Check again after the second await — another loadLogs() may
+      // have started between the header check and body read.
+      if (myRequestId !== REQUEST_ID) return;
+
       const lines = text.trim().split('\n').filter(l => l.length > 0);
 
       const entries = [];
@@ -210,14 +232,13 @@
 
       if (!cursor) {
         ALL_ENTRIES = entries;
-        KNOWN_HOSTS = new Set();
-        KNOWN_ALERTS = new Set();
-        KNOWN_THREADS = new Set();
       } else {
         ALL_ENTRIES = ALL_ENTRIES.concat(entries);
       }
 
-      // Update known values for filters
+      // Accumulate known values for filter dropdowns across all
+      // responses — never clear them, so applying one filter doesn't
+      // strip options from other dropdowns.
       for (const e of entries) {
         if (e.host) KNOWN_HOSTS.add(e.host);
         if (e.alertname) KNOWN_ALERTS.add(e.alertname);
@@ -227,6 +248,7 @@
       renderTable();
 
     } catch(e) {
+      if (myRequestId !== REQUEST_ID) return;
       status.textContent = 'Connection error: ' + e.message;
     }
   };

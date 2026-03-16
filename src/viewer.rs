@@ -1236,6 +1236,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_logs_filters_by_alertname_and_host() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-alert-host-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("alert-host-test.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        let test_mutex = tokio::sync::Mutex::new(());
+
+        // Write entries with different alertnames and hosts
+        for (i, (alert, host)) in [
+            ("BlockStale", "bitcoin-03"),
+            ("INVQueue", "bitcoin-03"),
+            ("BlockStale", "vps-dev-01"),
+            ("INVQueue", "vps-dev-01"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut entry = LogEntry::structured(
+                Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+                format!("{}:{}:ts", alert, host),
+                alert.to_string(),
+                host.to_string(),
+                String::new(),
+                "benign",
+                None,
+                format!("Summary {} {}", alert, host),
+                "cause".into(),
+                "scope".into(),
+                vec!["e1".into()],
+                sample_telemetry(),
+            );
+            entry.logged_at = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, i as u32).unwrap();
+            append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
+        }
+
+        let state = Arc::new(AppState {
+            grafana_url: "http://localhost:3000".into(),
+            grafana_api_key: "test-key".into(),
+            claude_bin: "echo".into(),
+            claude_model: "claude-sonnet-4-6".into(),
+            mcp_config: "/dev/null".into(),
+            log_file: Some(log_path_str.clone()),
+            claude_timeout: std::time::Duration::from_secs(600),
+            http: reqwest::Client::new(),
+            rpc_client: None,
+            investigation_semaphore: tokio::sync::Semaphore::new(4),
+            cooldown: std::time::Duration::ZERO,
+            cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
+            viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
+        });
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // Filter by alertname only
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?alertname=BlockStale")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries: Vec<LogEntry> = String::from_utf8(body.to_vec())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 2, "should return 2 BlockStale entries");
+        assert!(entries.iter().all(|e| e.alertname == "BlockStale"));
+
+        // Filter by host only
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?host=vps-dev-01")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries: Vec<LogEntry> = String::from_utf8(body.to_vec())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 2, "should return 2 vps-dev-01 entries");
+        assert!(entries.iter().all(|e| e.host == "vps-dev-01"));
+
+        // Filter by both alertname and host
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?alertname=INVQueue&host=bitcoin-03")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries: Vec<LogEntry> = String::from_utf8(body.to_vec())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(entries.len(), 1, "should return 1 entry matching both");
+        assert_eq!(entries[0].alertname, "INVQueue");
+        assert_eq!(entries[0].host, "bitcoin-03");
+
+        // Filter with no matches
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?alertname=NonExistent")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            body_str.trim().is_empty(),
+            "non-matching filter should return empty body"
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
     async fn api_logs_rejects_invalid_cursor() {
         use axum::body::Body;
         use axum::http::Request;

@@ -27,7 +27,7 @@ Update `CHANGELOG.md` under `[Unreleased]` as you work. Commit changelog entries
 
 ### Cutting a release
 
-1. **Finalise changelog**: Move `[Unreleased]` entries to a new version section with today's date. Update comparison links. Commit this change.
+1. **Finalise changelog** (do NOT commit): Move `[Unreleased]` entries to a new version section with today's date. Update comparison links. Leave the changes unstaged or staged — the release script will include them.
 
 2. **Run the release**:
    ```bash
@@ -37,8 +37,10 @@ Update `CHANGELOG.md` under `[Unreleased]` as you work. Commit changelog entries
    The script (`scripts/release.sh`) will:
    - Bump version in `Cargo.toml` and sync to `flake.nix`
    - Run local quality gates: `just check && just test`
-   - Commit the version bump: `chore: release vX.Y.Z`
+   - Commit everything in a single commit: `chore: release vX.Y.Z` (version bump + changelog)
    - Create annotated tag: `vX.Y.Z`
+
+   The script allows uncommitted `CHANGELOG.md` changes and rolls them into the release commit. Any other uncommitted changes will cause the script to abort.
 
    CI still runs `nix build` on Linux after push. Local release gating does not require `nix build` on Darwin hosts.
 
@@ -64,5 +66,5 @@ Tags use the `vX.Y.Z` format (e.g., `v0.2.0`). Annotated with message "Release v
 
 ## Commit Convention
 
-- Release commits: `chore: release vX.Y.Z`
-- Changelog must be committed separately before running `just release` (the release script requires a clean working tree)
+- Release commits: `chore: release vX.Y.Z` (single commit with version bump + changelog)
+- Changelog changes should be left uncommitted before running `just release` — the script includes them automatically

@@ -11,7 +11,7 @@ Usage: ./scripts/release.sh <major|minor|patch> [--dry-run]
 Runs the full release pipeline:
   1. Bump version in Cargo.toml + sync to flake.nix
   2. Run local quality gates (fmt, clippy, test)
-  3. Commit, tag
+  3. Commit (includes pending CHANGELOG.md changes), tag
 
 Options:
   major|minor|patch   Semver bump type (required)
@@ -41,11 +41,18 @@ if [ -z "$BUMP" ]; then
   exit 1
 fi
 
-# Abort if working tree is dirty
-if ! git diff --quiet HEAD 2>/dev/null; then
-  echo "Error: working tree has uncommitted changes. Commit or stash them first." >&2
+# Allow uncommitted CHANGELOG.md changes (included in release commit).
+# Abort if anything else is dirty.
+DIRTY_FILES=$(git diff --name-only HEAD 2>/dev/null || true)
+NON_CHANGELOG=$(echo "$DIRTY_FILES" | grep -v '^CHANGELOG.md$' | grep -v '^$' || true)
+if [ -n "$NON_CHANGELOG" ]; then
+  echo "Error: working tree has uncommitted changes outside CHANGELOG.md." >&2
+  echo "Only CHANGELOG.md changes are allowed (they'll be included in the release commit)." >&2
   git status --short
   exit 1
+fi
+if [ -n "$DIRTY_FILES" ]; then
+  echo "Including uncommitted CHANGELOG.md changes in release commit."
 fi
 
 # --- 1. Version bump ---
@@ -68,7 +75,7 @@ if $DRY_RUN; then
   echo "[dry-run] Would update flake.nix:  version = \"$OLD_VERSION\" → \"$NEW_VERSION\""
   echo "[dry-run] Would regenerate Cargo.lock"
   echo "[dry-run] Would run: just check && just test"
-  echo "[dry-run] Would commit: chore: release v${NEW_VERSION}"
+  echo "[dry-run] Would commit: chore: release v${NEW_VERSION} (includes CHANGELOG.md if modified)"
   echo "[dry-run] Would tag: v${NEW_VERSION}"
   echo ""
   echo "No changes made."
@@ -94,7 +101,7 @@ just test
 # --- 3. Commit + tag ---
 echo ""
 echo "Committing release..."
-git add Cargo.toml Cargo.lock flake.nix
+git add Cargo.toml Cargo.lock flake.nix CHANGELOG.md
 git commit -m "$(cat <<EOF
 chore: release v${NEW_VERSION}
 EOF
