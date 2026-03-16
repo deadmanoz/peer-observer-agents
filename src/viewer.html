@@ -127,6 +127,15 @@
   // PROXY_AUTH is true and TOKEN stays empty (the proxy handles auth).
   let PROXY_AUTH = false;
 
+  // Safe status message helper (uses textContent, not innerHTML).
+  function showStatus(container, text) {
+    container.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'status-msg';
+    div.textContent = text;
+    container.appendChild(div);
+  }
+
   // Monotonic request ID to discard stale responses.  Each loadLogs()
   // call increments this; when the response arrives, it checks that
   // its ID still matches the latest — otherwise it was superseded by
@@ -162,7 +171,6 @@
   })();
 
   window.loadLogs = async function(cursor) {
-    const status = document.getElementById('status');
     const content = document.getElementById('content');
 
     // Claim a new request ID; any in-flight response with an older
@@ -170,9 +178,7 @@
     const myRequestId = ++REQUEST_ID;
 
     if (!cursor) {
-      status.textContent = 'Loading...';
-      content.innerHTML = '';
-      content.appendChild(status);
+      showStatus(content, 'Loading...');
     }
 
     const params = new URLSearchParams();
@@ -202,13 +208,11 @@
         document.getElementById('auto-refresh').checked = false;
         document.getElementById('auth-bar').classList.remove('hidden');
         document.getElementById('filters-bar').classList.add('hidden');
-        status.textContent = 'Invalid token. Please try again.';
-        content.innerHTML = '';
-        content.appendChild(status);
+        showStatus(content, 'Invalid token. Please try again.');
         return;
       }
       if (!resp.ok) {
-        status.textContent = 'Error: ' + resp.status;
+        showStatus(content, 'Error: ' + resp.status);
         return;
       }
 
@@ -249,7 +253,7 @@
 
     } catch(e) {
       if (myRequestId !== REQUEST_ID) return;
-      status.textContent = 'Connection error: ' + e.message;
+      showStatus(content, 'Connection error: ' + e.message);
     }
   };
 
