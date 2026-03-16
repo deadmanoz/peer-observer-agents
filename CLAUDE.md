@@ -30,7 +30,7 @@ nix build                      # Build via flake (Linux/CI)
 
 - `src/main.rs` — HTTP server, webhook handler, Claude CLI invocation, Grafana annotation posting, idempotency, telemetry
 - `src/annotation.rs` — Structured annotation types (Verdict, StructuredAnnotation), JSON parsing/validation, HTML/plaintext rendering, log field sanitization, HTML stripping
-- `src/prompt.rs` — Alert context extraction and investigation prompt generation (per-alert and per-category instructions)
+- `src/prompt.rs` — Alert context extraction and investigation prompt generation (per-alert and per-category instructions, including `PeerObserverThreadSaturation` for per-thread CPU saturation)
 - `src/rpc.rs` — Bitcoin Core JSON-RPC client for pre-fetching node data (getpeerinfo, getblockchaininfo, etc.) over WireGuard
 - `Cargo.toml` — Dependencies
 - `flake.nix` — Nix build definition with checks (package, fmt, clippy, test)
@@ -75,7 +75,7 @@ Optional RPC pre-fetch: `ANNOTATION_AGENT_RPC_HOSTS` (JSON host→IP map), `ANNO
 
 ## Log Correlation
 
-Each alert gets a stable `alert_id` in the format `alertname:host:startsAt` (e.g., `PeerObserverBlockStale:bitcoin-03:20250615T120000Z`). This ID is logged through all processing stages for end-to-end tracing.
+Each alert gets a stable `alert_id` derived from `(alertname, host, threadname, startsAt)`. For alerts without a `threadname` label, the format is `alertname:host:startsAt` (e.g., `PeerObserverBlockStale:bitcoin-03:20250615T120000Z`). For thread-aware alerts, it includes the thread: `alertname:host:threadname:startsAt` (e.g., `PeerObserverThreadSaturation:bitcoin-03:b-msghand:20250615T120000Z`). This ID is logged through all processing stages for end-to-end tracing.
 
 ## Prior Context Scoping
 
@@ -99,4 +99,4 @@ This crate can be added as a flake input to [infra-library](https://github.com/p
 - **Model**: Defaults to `claude-sonnet-4-6` for fast, cost-effective investigations. Configurable via `ANNOTATION_AGENT_CLAUDE_MODEL`.
 - **Structured annotation output**: Claude outputs a JSON object with `verdict`, `action`, `summary`, `cause`, `scope`, and `evidence` fields. Rust validates the schema (enum verdict, non-empty fields, verdict-action consistency) and renders HTML for Grafana tooltips. Graceful fallback: if parsing fails, raw text is posted as-is. The verdict (`benign`/`investigate`/`action_required`) is added as a Grafana tag for dashboard filtering but is NOT part of the idempotency key to prevent duplicate annotations during retries.
 - **Grafana HTML annotations**: Annotation tooltips render HTML via DOMPurify sanitization (verified against grafana/grafana AnnotationTooltip2.tsx, 2026-03). Only safe tags used: `<b>`, `<br>`, `&bull;`. Prior annotations have HTML stripped before injection into new investigation prompts.
-- **Cooldown suppression**: Uses `(alertname, host)` as the coalescing key, intentionally ignoring `startsAt`. Within the cooldown window, all retriggers for the same alert type on the same host are treated as the same incident. Failed investigations clear the cooldown state so Alertmanager retries are not suppressed. State is in-process only (does not survive restarts).
+- **Cooldown suppression**: Uses `(alertname, host, threadname)` as the coalescing key, intentionally ignoring `startsAt`. Within the cooldown window, all retriggers for the same alert type on the same host (and thread, for thread-aware alerts) are treated as the same incident. For alerts without a `threadname` label, the field defaults to empty string and doesn't change behavior. Failed investigations clear the cooldown state so Alertmanager retries are not suppressed. State is in-process only (does not survive restarts).
