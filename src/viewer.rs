@@ -347,8 +347,10 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    // RFC 7235 §2.1: auth-scheme names are case-insensitive.
     let token = header
         .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
     if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
         return Err(StatusCode::UNAUTHORIZED);
@@ -463,13 +465,18 @@ pub(crate) async fn api_logs(
         }
 
         // Apply server-side filters.
-        // NOTE: verdict filter intentionally excludes raw_fallback entries
-        // (which have verdict: None) when any verdict is selected. Raw
-        // fallback entries are only visible when no verdict filter is set.
+        // ?verdict=raw_fallback matches entries with entry_kind == RawFallback.
+        // Other verdict values match structured entries by verdict field.
         if let Some(ref v) = query.verdict {
-            match &entry.verdict {
-                Some(ev) if ev == v => {}
-                _ => continue,
+            if v == "raw_fallback" {
+                if entry.entry_kind != EntryKind::RawFallback {
+                    continue;
+                }
+            } else {
+                match &entry.verdict {
+                    Some(ev) if ev == v => {}
+                    _ => continue,
+                }
             }
         }
         if let Some(ref h) = query.host {
@@ -555,13 +562,19 @@ pub(crate) async fn api_logs(
 /// without a valid token.
 pub(crate) async fn logs_page(
     State(state): State<Arc<AppState>>,
-) -> Result<Html<&'static str>, StatusCode> {
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
     // Feature gate: only serve when both log file and auth token are configured.
     // This is NOT an auth check — see doc comment above.
     if state.viewer_auth_token.is_none() || state.log_file.is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
-    Ok(Html(include_str!("viewer.html")))
+    Ok((
+        [
+            ("x-frame-options", "DENY"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        Html(include_str!("viewer.html")),
+    ))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
