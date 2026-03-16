@@ -162,7 +162,16 @@ impl LogEntry {
 }
 
 /// Append a JSONL log entry to the configured log file.
-pub(crate) async fn append_jsonl_log(path: &str, entry: &LogEntry) {
+///
+/// Serializes writes via the provided mutex to prevent interleaved bytes
+/// when concurrent investigations complete simultaneously. `O_APPEND` alone
+/// does not guarantee atomicity for payloads larger than `PIPE_BUF` (~4 KB),
+/// and raw fallback entries can exceed that limit.
+pub(crate) async fn append_jsonl_log(
+    path: &str,
+    entry: &LogEntry,
+    write_mutex: &tokio::sync::Mutex<()>,
+) {
     let mut line = match serde_json::to_string(entry) {
         Ok(json) => json,
         Err(e) => {
@@ -171,6 +180,7 @@ pub(crate) async fn append_jsonl_log(path: &str, entry: &LogEntry) {
         }
     };
     line.push('\n');
+    let _guard = write_mutex.lock().await;
     match tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -395,10 +405,13 @@ pub(crate) async fn api_logs(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // File not created yet (no annotations posted). Return empty page.
             return Ok((
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/x-ndjson; charset=utf-8",
-                )],
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "application/x-ndjson; charset=utf-8",
+                    ),
+                    (axum::http::header::CACHE_CONTROL, "no-store"),
+                ],
                 String::new(),
             )
                 .into_response());
@@ -511,10 +524,13 @@ pub(crate) async fn api_logs(
     };
 
     let mut resp = (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/x-ndjson; charset=utf-8",
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/x-ndjson; charset=utf-8",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
         body,
     )
         .into_response();
@@ -801,8 +817,9 @@ mod tests {
         let entry1 = sample_structured_entry();
         let entry2 = sample_raw_fallback_entry();
 
-        append_jsonl_log(path_str, &entry1).await;
-        append_jsonl_log(path_str, &entry2).await;
+        let test_mutex = tokio::sync::Mutex::new(());
+        append_jsonl_log(path_str, &entry1, &test_mutex).await;
+        append_jsonl_log(path_str, &entry2, &test_mutex).await;
 
         // Read back and verify
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -842,7 +859,8 @@ mod tests {
 
         // Write a test entry
         let entry = sample_structured_entry();
-        append_jsonl_log(&log_path_str, &entry).await;
+        let test_mutex = tokio::sync::Mutex::new(());
+        append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
 
         let state = Arc::new(AppState {
             grafana_url: "http://localhost:3000".into(),
@@ -858,6 +876,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("secret-token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -915,6 +934,7 @@ mod tests {
         let _ = tokio::fs::remove_file(&log_path).await;
 
         // Write three entries with different alert_starts_at but sequential logged_at
+        let test_mutex = tokio::sync::Mutex::new(());
         for i in 0u32..3 {
             let mut entry = LogEntry::structured(
                 Utc.with_ymd_and_hms(2025, 6, 15, 12 + i, 0, 0).unwrap(),
@@ -932,7 +952,7 @@ mod tests {
             );
             // Override logged_at to be deterministic
             entry.logged_at = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, i).unwrap();
-            append_jsonl_log(&log_path_str, &entry).await;
+            append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
         }
 
         let state = Arc::new(AppState {
@@ -949,6 +969,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1003,6 +1024,7 @@ mod tests {
         // Write 4 entries with the SAME logged_at but different alert_ids.
         // alert_ids are chosen so lexicographic order differs from append order.
         let same_ts = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, 0).unwrap();
+        let test_mutex = tokio::sync::Mutex::new(());
         for id in ["Charlie", "Alpha", "Delta", "Bravo"] {
             let mut entry = LogEntry::structured(
                 same_ts,
@@ -1019,7 +1041,7 @@ mod tests {
                 sample_telemetry(),
             );
             entry.logged_at = same_ts;
-            append_jsonl_log(&log_path_str, &entry).await;
+            append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
         }
 
         let state = Arc::new(AppState {
@@ -1036,6 +1058,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1127,7 +1150,8 @@ mod tests {
         // Write entries with different verdicts
         let mut benign = sample_structured_entry();
         benign.logged_at = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, 0).unwrap();
-        append_jsonl_log(&log_path_str, &benign).await;
+        let test_mutex = tokio::sync::Mutex::new(());
+        append_jsonl_log(&log_path_str, &benign, &test_mutex).await;
 
         let mut action_required = LogEntry::structured(
             Utc.with_ymd_and_hms(2025, 6, 15, 13, 0, 0).unwrap(),
@@ -1144,7 +1168,7 @@ mod tests {
             sample_telemetry(),
         );
         action_required.logged_at = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, 1).unwrap();
-        append_jsonl_log(&log_path_str, &action_required).await;
+        append_jsonl_log(&log_path_str, &action_required, &test_mutex).await;
 
         let state = Arc::new(AppState {
             grafana_url: "http://localhost:3000".into(),
@@ -1160,6 +1184,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1202,7 +1227,8 @@ mod tests {
         let log_path_str = log_path.to_str().unwrap().to_string();
 
         let entry = sample_structured_entry();
-        append_jsonl_log(&log_path_str, &entry).await;
+        let test_mutex = tokio::sync::Mutex::new(());
+        append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
 
         let state = Arc::new(AppState {
             grafana_url: "http://localhost:3000".into(),
@@ -1218,6 +1244,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1258,7 +1285,8 @@ mod tests {
         let log_path_str = log_path.to_str().unwrap().to_string();
 
         let entry = sample_structured_entry();
-        append_jsonl_log(&log_path_str, &entry).await;
+        let test_mutex = tokio::sync::Mutex::new(());
+        append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
 
         let state = Arc::new(AppState {
             grafana_url: "http://localhost:3000".into(),
@@ -1274,6 +1302,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1321,6 +1350,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1364,6 +1394,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: None,
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()
@@ -1402,6 +1433,7 @@ mod tests {
             cooldown: std::time::Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
         });
 
         let app = Router::new()

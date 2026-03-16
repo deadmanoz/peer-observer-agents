@@ -155,6 +155,9 @@ struct AppState {
     /// Bearer token for `/logs` and `/api/logs` viewer endpoints.
     /// When `None`, viewer routes return 404.
     viewer_auth_token: Option<String>,
+    /// Serializes JSONL log writes to prevent interleaved bytes from
+    /// concurrent investigations.
+    log_write_mutex: tokio::sync::Mutex<()>,
 }
 
 // Alertmanager webhook payload types.
@@ -373,6 +376,7 @@ async fn main() -> Result<()> {
         viewer_auth_token: env::var("ANNOTATION_AGENT_VIEWER_AUTH_TOKEN")
             .ok()
             .filter(|v| !v.is_empty()),
+        log_write_mutex: tokio::sync::Mutex::new(()),
         claude_timeout: Duration::from_secs(claude_timeout_secs),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(http_timeout_secs))
@@ -578,7 +582,7 @@ async fn append_log(
             telemetry.clone(),
         ),
     };
-    viewer::append_jsonl_log(path, &entry).await;
+    viewer::append_jsonl_log(path, &entry, &state.log_write_mutex).await;
 }
 
 /// Fetch recent AI annotations from Grafana to provide as context for the investigation.
@@ -975,6 +979,7 @@ mod tests {
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
             viewer_auth_token: None,
+            log_write_mutex: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -1317,6 +1322,7 @@ mod tests {
             cooldown: Duration::from_secs(1800),
             cooldown_map: std::sync::Mutex::new(map),
             viewer_auth_token: None,
+            log_write_mutex: tokio::sync::Mutex::new(()),
         })
     }
 
