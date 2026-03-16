@@ -529,7 +529,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
             ).into()
         }
 
-        "PeerObserverThreadSaturation" if threadname.is_empty() => {
+        "PeerObserverThreadSaturation" if pq_threadname.is_empty() => {
             "The alert was fired without a `threadname` label. \
              Investigation cannot proceed without it — the threadname \
              is required to query per-thread CPU metrics. \
@@ -867,6 +867,16 @@ mod tests {
         });
         assert!(prompt.contains("fired without a `threadname` label"));
         assert!(!prompt.contains("Confirm saturation with PromQL"));
+    }
+
+    #[test]
+    fn thread_saturation_with_control_char_only_threadname_gets_guard() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverThreadSaturation".into(),
+            threadname: "\n\t".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("fired without a `threadname` label"));
     }
 
     #[test]

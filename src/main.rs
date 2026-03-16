@@ -214,7 +214,14 @@ impl AlertId {
 
 impl fmt::Display for AlertId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.threadname.is_empty() {
+        // Strip control characters from threadname to prevent log injection
+        // (threadname originates from Alertmanager labels which are untrusted).
+        let safe_threadname: String = self
+            .threadname
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        if safe_threadname.is_empty() {
             write!(
                 f,
                 "{}:{}:{}",
@@ -228,7 +235,7 @@ impl fmt::Display for AlertId {
                 "{}:{}:{}:{}",
                 self.alertname,
                 self.host,
-                self.threadname,
+                safe_threadname,
                 self.started.format("%Y%m%dT%H%M%SZ")
             )
         }
@@ -1432,6 +1439,31 @@ mod tests {
             aid.to_string(),
             "PeerObserverThreadSaturation:bitcoin-03:b-msghand:20250615T120000Z"
         );
+    }
+
+    #[test]
+    fn alert_id_display_strips_control_chars_from_threadname() {
+        let aid = AlertId {
+            alertname: "TestAlert".into(),
+            host: "bitcoin-03".into(),
+            threadname: "b-net\nINFO injected".into(),
+            started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+        };
+        let display = aid.to_string();
+        assert!(!display.contains('\n'));
+        assert!(display.contains("b-netINFO injected"));
+    }
+
+    #[test]
+    fn alert_id_display_omits_control_char_only_threadname() {
+        let aid = AlertId {
+            alertname: "TestAlert".into(),
+            host: "bitcoin-03".into(),
+            threadname: "\n\t".into(),
+            started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+        };
+        // Control-char-only threadname produces empty after stripping → 3-segment format
+        assert_eq!(aid.to_string(), "TestAlert:bitcoin-03:20250615T120000Z");
     }
 
     #[test]
