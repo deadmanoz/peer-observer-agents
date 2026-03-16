@@ -121,6 +121,10 @@
   let KNOWN_ALERTS = new Set();
   let KNOWN_THREADS = new Set();
 
+  // When behind a reverse proxy that injects Authorization headers,
+  // PROXY_AUTH is true and TOKEN stays empty (the proxy handles auth).
+  let PROXY_AUTH = false;
+
   window.authenticate = function() {
     TOKEN = document.getElementById('token-input').value.trim();
     if (!TOKEN) return;
@@ -133,6 +137,20 @@
   document.getElementById('token-input').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') authenticate();
   });
+
+  // Auto-detect proxy auth: try a request without a token. If the reverse
+  // proxy injects the Authorization header, we get 200 and skip the login.
+  (async function detectProxyAuth() {
+    try {
+      const resp = await fetch('/api/logs?limit=1');
+      if (resp.ok) {
+        PROXY_AUTH = true;
+        document.getElementById('auth-bar').classList.add('hidden');
+        document.getElementById('filters-bar').classList.remove('hidden');
+        loadLogs();
+      }
+    } catch(e) { /* network error — fall through to manual auth */ }
+  })();
 
   window.loadLogs = async function(cursor) {
     const status = document.getElementById('status');
@@ -158,9 +176,8 @@
     if (cursor) params.set('before_cursor', cursor);
 
     try {
-      const resp = await fetch('/api/logs?' + params.toString(), {
-        headers: { 'Authorization': 'Bearer ' + TOKEN }
-      });
+      const fetchOpts = PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
+      const resp = await fetch('/api/logs?' + params.toString(), fetchOpts);
 
       if (resp.status === 401) {
         clearInterval(REFRESH_TIMER);
