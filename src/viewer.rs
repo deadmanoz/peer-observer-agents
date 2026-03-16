@@ -349,12 +349,17 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
 }
 
 /// Constant-time byte slice comparison to prevent timing side-channels.
-/// Folds the length mismatch into the accumulator rather than short-circuiting,
-/// so the only timing signal is "lengths differ" (not the expected length).
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut acc = if a.len() == b.len() { 0u8 } else { 1u8 };
-    for (x, y) in a.iter().zip(b.iter()) {
-        acc |= x ^ y;
+/// Always iterates `expected.len()` times regardless of `submitted` length,
+/// so the only timing signal is the expected token's length (which is fixed
+/// per deployment, not attacker-controlled).
+fn constant_time_eq(submitted: &[u8], expected: &[u8]) -> bool {
+    let mut acc = if submitted.len() == expected.len() {
+        0u8
+    } else {
+        1u8
+    };
+    for (i, y) in expected.iter().enumerate() {
+        acc |= submitted.get(i).copied().unwrap_or(0) ^ y;
     }
     acc == 0
 }
@@ -385,14 +390,24 @@ pub(crate) async fn api_logs(
     };
 
     // Forward-scan the file, collecting all matching entries.
-    let file = tokio::fs::File::open(path).await.map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            StatusCode::NOT_FOUND
-        } else {
-            warn!(path, error = %e, "failed to open log file");
-            StatusCode::INTERNAL_SERVER_ERROR
+    let file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // File not created yet (no annotations posted). Return empty page.
+            return Ok((
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/x-ndjson; charset=utf-8",
+                )],
+                String::new(),
+            )
+                .into_response());
         }
-    })?;
+        Err(e) => {
+            warn!(path, error = %e, "failed to open log file");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
     let reader = tokio::io::BufReader::new(file);
     let mut lines = reader.lines();
 
