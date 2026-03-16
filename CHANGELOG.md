@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-03-16
+
+### Fixed
+
+- Fix log viewer filters not working due to race condition — stale unfiltered response from initial load could overwrite filtered results while preserving dropdown selection
+- Fix filter dropdowns losing options when applying a filter — known values now accumulate across responses instead of being rebuilt from each filtered response
+
 ## [0.5.1] - 2026-03-16
 
 ### Added
@@ -85,7 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow: fmt, clippy, test, nix build
 - Comprehensive documentation (deployment, testing, telemetry)
 
-[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/peer-observer/peer-observer-agents/releases/tag/v0.2.0
