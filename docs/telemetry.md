@@ -2,7 +2,7 @@
 
 ## Log Correlation
 
-Each alert is assigned a stable correlation ID in the format `alertname:host:startsAt` (e.g., `PeerObserverBlockStale:bitcoin-03:20250615T120000Z`). This `alert_id` is logged through all processing stages — receive, Claude call, duplicate-skip, post/skip, and failure — so a single alert can be traced end-to-end via `grep` or structured log queries.
+Each alert is assigned a stable correlation ID derived from `(alertname, host, threadname, startsAt)`. For alerts without a `threadname` label, the format is `alertname:host:startsAt` (e.g., `PeerObserverBlockStale:bitcoin-03:20250615T120000Z`). For thread-aware alerts, it includes the thread: `alertname:host:threadname:startsAt` (e.g., `PeerObserverThreadSaturation:bitcoin-03:b-msghand:20250615T120000Z`). This `alert_id` is logged through all processing stages — receive, Claude call, duplicate-skip, post/skip, and failure — so a single alert can be traced end-to-end via `grep` or structured log queries.
 
 ## Structured Logging
 
@@ -26,7 +26,7 @@ INFO peer_observer_agent: claude investigation completed
 
 | Field | Description |
 |-------|-------------|
-| `alert_id` | Stable correlation ID (`alertname:host:startsAt`) |
+| `alert_id` | Stable correlation ID (`alertname:host:startsAt` or `alertname:host:threadname:startsAt`) |
 | `num_turns` | Number of Claude conversation turns in the investigation |
 | `duration_ms` | Total wall-clock time for the Claude CLI process |
 | `duration_api_ms` | Time spent in API calls (subset of `duration_ms`) |
@@ -53,7 +53,7 @@ If Claude's output cannot be parsed as structured JSON (graceful fallback), the 
 
 ## Cooldown Suppression
 
-When a retrigger of the same `(alertname, host)` is suppressed by the cooldown window, one of two log lines is emitted at INFO level:
+When a retrigger of the same `(alertname, host, threadname)` is suppressed by the cooldown window, one of two log lines is emitted at INFO level:
 
 **In-flight suppression** (investigation for this alert has been claimed and is either queued for a concurrency slot or actively running):
 ```

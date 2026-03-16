@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Cooldown suppression for retriggers of the same `(alertname, host)` within a configurable window (`ANNOTATION_AGENT_COOLDOWN_SECS`, default 30 minutes). Uses an RAII guard for panic-safe state management. Failed investigations clear the cooldown so Alertmanager retries are not suppressed.
+- Thread-level CPU saturation detection via `PeerObserverThreadSaturation` alert support with per-thread investigation instructions
+- `threadname` label propagation through the alert identity pipeline (cooldown, idempotency, prompt context) — concurrent thread saturations on the same host are tracked independently
+- RPC pre-fetch of `getblockchaininfo` for CPU/thread alerts to enable IBD correlation
+- Updated `PeerObserverHighCPU` investigation to check per-thread CPU metrics (`namedprocess_namegroup_thread_cpu_seconds_total`) and reference pre-fetched RPC data
+- Cooldown suppression for retriggers of the same `(alertname, host, threadname)` within a configurable window (`ANNOTATION_AGENT_COOLDOWN_SECS`, default 30 minutes). Uses an RAII guard for panic-safe state management. Failed investigations clear the cooldown so Alertmanager retries are not suppressed.
 
 ## [0.3.0] - 2026-03-12
 

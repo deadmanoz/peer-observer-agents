@@ -34,7 +34,7 @@ const DEFAULT_CLAUDE_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_MAX_CONCURRENT: usize = 4;
 
 /// Default cooldown window (seconds) for suppressing retriggers of the same
-/// `(alertname, host)` pair. 0 = disabled.
+/// `(alertname, host, threadname)` tuple. 0 = disabled.
 const DEFAULT_COOLDOWN_SECS: u64 = 1800;
 
 // ── Cooldown suppression ──────────────────────────────────────────────
@@ -45,7 +45,7 @@ enum CooldownState {
     Completed(Instant),
 }
 
-type CooldownKey = (String, String);
+type CooldownKey = (String, String, String);
 type CooldownMap = std::sync::Mutex<HashMap<CooldownKey, CooldownState>>;
 
 /// Why a claim was rejected.
@@ -145,7 +145,7 @@ struct AppState {
     /// Limits the number of concurrent Claude investigations to prevent
     /// resource exhaustion when Alertmanager delivers large grouped batches.
     investigation_semaphore: Semaphore,
-    /// Cooldown window for suppressing retriggers of the same `(alertname, host)`.
+    /// Cooldown window for suppressing retriggers of the same `(alertname, host, threadname)`.
     /// `Duration::ZERO` disables suppression.
     cooldown: Duration,
     /// In-process state for cooldown suppression.
@@ -187,12 +187,13 @@ struct GrafanaAnnotationResponse {
     time: i64,
 }
 
-/// Stable correlation ID for an alert, derived from (alertname, host, startsAt).
+/// Stable correlation ID for an alert, derived from (alertname, host, threadname, startsAt).
 /// Logged through all processing stages so a single alert can be traced end-to-end.
 #[derive(Debug, Clone)]
 struct AlertId {
     alertname: String,
     host: String,
+    threadname: String,
     started: DateTime<Utc>,
 }
 
@@ -205,6 +206,7 @@ impl AlertId {
                 .get("host")
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string()),
+            threadname: alert.labels.get("threadname").cloned().unwrap_or_default(),
             started: alert.starts_at,
         }
     }
@@ -212,24 +214,40 @@ impl AlertId {
 
 impl fmt::Display for AlertId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}:{}",
-            self.alertname,
-            self.host,
-            self.started.format("%Y%m%dT%H%M%SZ")
-        )
+        if self.threadname.is_empty() {
+            write!(
+                f,
+                "{}:{}:{}",
+                self.alertname,
+                self.host,
+                self.started.format("%Y%m%dT%H%M%SZ")
+            )
+        } else {
+            write!(
+                f,
+                "{}:{}:{}:{}",
+                self.alertname,
+                self.host,
+                self.threadname,
+                self.started.format("%Y%m%dT%H%M%SZ")
+            )
+        }
     }
 }
 
 /// Build the stable tag set used for idempotency checks.
 /// Verdict is NOT included — it may differ between retries (fallback vs structured).
+/// Tag count is 3 for alerts without threadname, 4 for alerts with.
 fn build_idempotency_tags(aid: &AlertId) -> Vec<String> {
-    vec![
+    let mut tags = vec![
         "ai-annotation".to_string(),
         aid.alertname.clone(),
         aid.host.clone(),
-    ]
+    ];
+    if !aid.threadname.is_empty() {
+        tags.push(aid.threadname.clone());
+    }
+    tags
 }
 
 /// Build the full tag set posted to Grafana (idempotency tags + verdict).
@@ -418,11 +436,15 @@ async fn handle_webhook(
 }
 
 async fn process_alert(state: &AppState, alert: &Alert, aid: &AlertId) -> Result<()> {
-    // Cooldown suppression: coalesce retriggers of the same (alertname, host)
+    // Cooldown suppression: coalesce retriggers of the same (alertname, host, threadname)
     // within the cooldown window. Checked before the semaphore to avoid holding
     // a concurrency slot for suppressed alerts.
     let cooldown_guard = if !state.cooldown.is_zero() {
-        let key: CooldownKey = (aid.alertname.clone(), aid.host.clone());
+        let key: CooldownKey = (
+            aid.alertname.clone(),
+            aid.host.clone(),
+            aid.threadname.clone(),
+        );
         match try_claim_cooldown(key, &state.cooldown_map, state.cooldown) {
             Ok(guard) => Some(guard),
             Err(SuppressReason::InFlight) => {
@@ -826,9 +848,10 @@ async fn post_grafana_annotation(
     let time_ms = alert.starts_at.timestamp_millis();
     let time_end_ms = compute_annotation_time_end(time_ms, alert.ends_at);
 
-    // Idempotency key: stable 3-tag set. Verdict is NOT part of the key so that
-    // a retry where one attempt falls back to raw text and another succeeds with
-    // structured output will still match as a duplicate.
+    // Idempotency key: stable tag set (3 or 4 elements depending on threadname
+    // presence). Verdict is NOT part of the key so that a retry where one attempt
+    // falls back to raw text and another succeeds with structured output will
+    // still match as a duplicate.
     let key_tags = build_idempotency_tags(aid);
 
     if annotation_exists(state, &key_tags, time_ms).await {
@@ -1290,7 +1313,7 @@ mod tests {
 
         // Pre-populate: TestAlert on "unknown" host was just investigated.
         let state = test_state_with_cooldown(
-            ("TestAlert".into(), "unknown".into()),
+            ("TestAlert".into(), "unknown".into(), String::new()),
             CooldownState::Completed(Instant::now()),
         );
         let app = Router::new()
@@ -1323,7 +1346,7 @@ mod tests {
 
         // Pre-populate: TestAlert on "unknown" host is currently being investigated.
         let state = test_state_with_cooldown(
-            ("TestAlert".into(), "unknown".into()),
+            ("TestAlert".into(), "unknown".into(), String::new()),
             CooldownState::InFlight,
         );
         let app = Router::new()
@@ -1390,6 +1413,28 @@ mod tests {
     }
 
     #[test]
+    fn alert_id_display_format_with_threadname() {
+        let alert = Alert {
+            status: "firing".into(),
+            labels: {
+                let mut m = HashMap::new();
+                m.insert("alertname".into(), "PeerObserverThreadSaturation".into());
+                m.insert("host".into(), "bitcoin-03".into());
+                m.insert("threadname".into(), "b-msghand".into());
+                m
+            },
+            annotations: None,
+            starts_at: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+            ends_at: None,
+        };
+        let aid = AlertId::from_alert(&alert);
+        assert_eq!(
+            aid.to_string(),
+            "PeerObserverThreadSaturation:bitcoin-03:b-msghand:20250615T120000Z"
+        );
+    }
+
+    #[test]
     fn alert_id_missing_labels() {
         let alert = Alert {
             status: "firing".into(),
@@ -1408,17 +1453,37 @@ mod tests {
         AlertId {
             alertname: "TestAlert".into(),
             host: "bitcoin-03".into(),
+            threadname: String::new(),
+            started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+        }
+    }
+
+    fn test_aid_with_threadname() -> AlertId {
+        AlertId {
+            alertname: "TestAlert".into(),
+            host: "bitcoin-03".into(),
+            threadname: "b-msghand".into(),
             started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
         }
     }
 
     #[test]
-    fn idempotency_tags_are_stable_three_element() {
+    fn idempotency_tags_without_threadname_are_three_element() {
         let tags = build_idempotency_tags(&test_aid());
         assert_eq!(tags.len(), 3);
         assert_eq!(tags[0], "ai-annotation");
         assert_eq!(tags[1], "TestAlert");
         assert_eq!(tags[2], "bitcoin-03");
+    }
+
+    #[test]
+    fn idempotency_tags_with_threadname_are_four_element() {
+        let tags = build_idempotency_tags(&test_aid_with_threadname());
+        assert_eq!(tags.len(), 4);
+        assert_eq!(tags[0], "ai-annotation");
+        assert_eq!(tags[1], "TestAlert");
+        assert_eq!(tags[2], "bitcoin-03");
+        assert_eq!(tags[3], "b-msghand");
     }
 
     #[test]
@@ -1442,8 +1507,15 @@ mod tests {
     fn annotation_tags_superset_of_idempotency_tags() {
         let key = build_idempotency_tags(&test_aid());
         let posted = build_annotation_tags(&test_aid(), Some(&Verdict::Investigate));
-        // First 3 elements must match
-        assert_eq!(&posted[..3], &key[..]);
+        assert_eq!(&posted[..key.len()], &key[..]);
+        assert_eq!(posted.len(), key.len() + 1);
+    }
+
+    #[test]
+    fn annotation_tags_with_threadname_superset_of_idempotency_tags() {
+        let key = build_idempotency_tags(&test_aid_with_threadname());
+        let posted = build_annotation_tags(&test_aid_with_threadname(), Some(&Verdict::Benign));
+        assert_eq!(&posted[..key.len()], &key[..]);
         assert_eq!(posted.len(), key.len() + 1);
     }
 
@@ -1475,7 +1547,7 @@ mod tests {
     #[test]
     fn try_claim_succeeds_on_empty_map() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         let guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30));
         assert!(guard.is_ok());
         let locked = map.lock().unwrap();
@@ -1485,7 +1557,7 @@ mod tests {
     #[test]
     fn try_claim_suppresses_inflight() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         let _guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
         let result = try_claim_cooldown(key, &map, Duration::from_secs(30));
         assert!(matches!(result, Err(SuppressReason::InFlight)));
@@ -1494,7 +1566,7 @@ mod tests {
     #[test]
     fn try_claim_suppresses_completed_within_window() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         map.lock()
             .unwrap()
             .insert(key.clone(), CooldownState::Completed(Instant::now()));
@@ -1508,7 +1580,7 @@ mod tests {
     #[test]
     fn try_claim_allows_completed_beyond_window() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         let past = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
         map.lock()
             .unwrap()
@@ -1520,17 +1592,36 @@ mod tests {
     #[test]
     fn try_claim_allows_different_key() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key_a = ("AlertA".to_string(), "host1".to_string());
-        let key_b = ("AlertB".to_string(), "host1".to_string());
+        let key_a = ("AlertA".to_string(), "host1".to_string(), String::new());
+        let key_b = ("AlertB".to_string(), "host1".to_string(), String::new());
         let _guard_a = try_claim_cooldown(key_a, &map, Duration::from_secs(30)).unwrap();
         let result = try_claim_cooldown(key_b, &map, Duration::from_secs(30));
         assert!(result.is_ok());
     }
 
     #[test]
+    fn try_claim_differentiates_by_threadname() {
+        let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
+        let key_msghand = (
+            "PeerObserverThreadSaturation".to_string(),
+            "bitcoin-03".to_string(),
+            "b-msghand".to_string(),
+        );
+        let key_net = (
+            "PeerObserverThreadSaturation".to_string(),
+            "bitcoin-03".to_string(),
+            "b-net".to_string(),
+        );
+        let _guard = try_claim_cooldown(key_msghand, &map, Duration::from_secs(30)).unwrap();
+        // Different threadname on the same host should not be suppressed
+        let result = try_claim_cooldown(key_net, &map, Duration::from_secs(30));
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn guard_complete_transitions_to_completed() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         let guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
         guard.complete();
         let locked = map.lock().unwrap();
@@ -1543,7 +1634,7 @@ mod tests {
     #[test]
     fn guard_drop_without_complete_clears_entry() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         {
             let _guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
             // guard drops here without complete()
@@ -1555,7 +1646,7 @@ mod tests {
     #[test]
     fn guard_panic_safety() {
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = try_claim_cooldown(key.clone(), &map, Duration::from_secs(30)).unwrap();
             panic!("simulated failure");
@@ -1574,7 +1665,7 @@ mod tests {
         // In production, process_alert guards with `if !state.cooldown.is_zero()`
         // so this path is bypassed, but the function should still behave correctly.
         let map: CooldownMap = std::sync::Mutex::new(HashMap::new());
-        let key = ("AlertA".to_string(), "host1".to_string());
+        let key = ("AlertA".to_string(), "host1".to_string(), String::new());
         map.lock()
             .unwrap()
             .insert(key.clone(), CooldownState::Completed(Instant::now()));

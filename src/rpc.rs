@@ -275,12 +275,14 @@ fn rpc_methods_for_alert(alertname: &str) -> Vec<&'static str> {
         // Mempool alerts — need mempool state
         "PeerObserverMempoolFull" | "PeerObserverMempoolEmpty" => vec!["getmempoolinfo"],
 
+        // CPU/thread alerts — need blockchain state for IBD correlation
+        "PeerObserverHighCPU" | "PeerObserverThreadSaturation" => vec!["getblockchaininfo"],
+
         // Infrastructure/meta alerts — no Bitcoin Core RPC needed
         "PeerObserverServiceFailed"
         | "PeerObserverMetricsToolDown"
         | "PeerObserverDiskSpaceLow"
         | "PeerObserverHighMemory"
-        | "PeerObserverHighCPU"
         | "PeerObserverAnomalyDetectionDown" => vec![],
 
         // Unknown alerts — no prefetch
@@ -536,13 +538,20 @@ mod tests {
     }
 
     #[test]
+    fn cpu_thread_alerts_need_blockchaininfo() {
+        for alert in &["PeerObserverHighCPU", "PeerObserverThreadSaturation"] {
+            let methods = rpc_methods_for_alert(alert);
+            assert_eq!(methods, vec!["getblockchaininfo"], "for {alert}");
+        }
+    }
+
+    #[test]
     fn infrastructure_alerts_need_no_rpc() {
         for alert in &[
             "PeerObserverServiceFailed",
             "PeerObserverMetricsToolDown",
             "PeerObserverDiskSpaceLow",
             "PeerObserverHighMemory",
-            "PeerObserverHighCPU",
             "PeerObserverAnomalyDetectionDown",
         ] {
             let methods = rpc_methods_for_alert(alert);
