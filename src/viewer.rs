@@ -191,6 +191,8 @@ pub(crate) async fn append_jsonl_log(
             use tokio::io::AsyncWriteExt;
             if let Err(e) = f.write_all(line.as_bytes()).await {
                 warn!(path, error = %e, "failed to write JSONL log entry");
+            } else if let Err(e) = f.flush().await {
+                warn!(path, error = %e, "failed to flush JSONL log entry");
             }
         }
         Err(e) => warn!(path, error = %e, "failed to open JSONL log file"),
