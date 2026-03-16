@@ -206,7 +206,11 @@ impl AlertId {
                 .get("host")
                 .cloned()
                 .unwrap_or_else(|| "unknown".to_string()),
-            threadname: alert.labels.get("threadname").cloned().unwrap_or_default(),
+            threadname: alert
+                .labels
+                .get("threadname")
+                .map(|t| t.chars().filter(|c| !c.is_control()).collect())
+                .unwrap_or_default(),
             started: alert.starts_at,
         }
     }
@@ -214,14 +218,8 @@ impl AlertId {
 
 impl fmt::Display for AlertId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Strip control characters from threadname to prevent log injection
-        // (threadname originates from Alertmanager labels which are untrusted).
-        let safe_threadname: String = self
-            .threadname
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
-        if safe_threadname.is_empty() {
+        // threadname is pre-sanitized in from_alert (control chars stripped).
+        if self.threadname.is_empty() {
             write!(
                 f,
                 "{}:{}:{}",
@@ -235,7 +233,7 @@ impl fmt::Display for AlertId {
                 "{}:{}:{}:{}",
                 self.alertname,
                 self.host,
-                safe_threadname,
+                self.threadname,
                 self.started.format("%Y%m%dT%H%M%SZ")
             )
         }
@@ -1442,27 +1440,44 @@ mod tests {
     }
 
     #[test]
-    fn alert_id_display_strips_control_chars_from_threadname() {
-        let aid = AlertId {
-            alertname: "TestAlert".into(),
-            host: "bitcoin-03".into(),
-            threadname: "b-net\nINFO injected".into(),
-            started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+    fn alert_id_strips_control_chars_from_threadname_at_construction() {
+        let alert = Alert {
+            status: "firing".into(),
+            labels: {
+                let mut m = HashMap::new();
+                m.insert("alertname".into(), "TestAlert".into());
+                m.insert("host".into(), "bitcoin-03".into());
+                m.insert("threadname".into(), "b-net\nINFO injected".into());
+                m
+            },
+            annotations: None,
+            starts_at: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+            ends_at: None,
         };
-        let display = aid.to_string();
-        assert!(!display.contains('\n'));
-        assert!(display.contains("b-netINFO injected"));
+        let aid = AlertId::from_alert(&alert);
+        // Control chars stripped at construction
+        assert_eq!(aid.threadname, "b-netINFO injected");
+        assert!(!aid.to_string().contains('\n'));
     }
 
     #[test]
-    fn alert_id_display_omits_control_char_only_threadname() {
-        let aid = AlertId {
-            alertname: "TestAlert".into(),
-            host: "bitcoin-03".into(),
-            threadname: "\n\t".into(),
-            started: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+    fn alert_id_control_char_only_threadname_becomes_empty() {
+        let alert = Alert {
+            status: "firing".into(),
+            labels: {
+                let mut m = HashMap::new();
+                m.insert("alertname".into(), "TestAlert".into());
+                m.insert("host".into(), "bitcoin-03".into());
+                m.insert("threadname".into(), "\n\t".into());
+                m
+            },
+            annotations: None,
+            starts_at: Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+            ends_at: None,
         };
-        // Control-char-only threadname produces empty after stripping → 3-segment format
+        let aid = AlertId::from_alert(&alert);
+        assert!(aid.threadname.is_empty());
+        // Falls through to 3-segment format
         assert_eq!(aid.to_string(), "TestAlert:bitcoin-03:20250615T120000Z");
     }
 
