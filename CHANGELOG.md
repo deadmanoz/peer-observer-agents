@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix log viewer filters crashing with `TypeError: Cannot set properties of null` — the `#status` element was destroyed by `renderTable()` via `innerHTML = ''`, causing subsequent `loadLogs()` calls to fail silently before the fetch even ran
+
 ## [0.5.2] - 2026-03-16
 
 ### Fixed
 
-- Fix log viewer filters not working due to race condition — stale unfiltered response from initial load could overwrite filtered results while preserving dropdown selection
+- Fix log viewer stale-response race condition — initial unfiltered response could overwrite filtered results when user changed filters before initial load completed
 - Fix filter dropdowns losing options when applying a filter — known values now accumulate across responses instead of being rebuilt from each filtered response
 
 ## [0.5.1] - 2026-03-16
