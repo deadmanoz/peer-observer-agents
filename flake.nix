@@ -18,7 +18,7 @@
         {
           peer-observer-agent = pkgs.rustPlatform.buildRustPackage {
             pname = "peer-observer-agent";
-            version = "0.3.0";
+            version = "0.4.0";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
 

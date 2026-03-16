@@ -1,5 +1,8 @@
 # peer-observer-agents
 
+> [!NOTE]
+> This is an experiment in introducing automated discovery and analysis of issues observed on the Bitcoin P2P network, via monitoring by a number of [peer-observer](https://github.com/peer-observer)-configured Bitcoin nodes.
+
 AI agents for the [peer-observer](https://github.com/peer-observer) Bitcoin P2P network monitoring infrastructure.
 
 ## peer-observer-agent
@@ -26,10 +29,10 @@ Alertmanager webhook
 ```
 
 1. Alertmanager sends a webhook to `POST /webhook`
-2. For each firing alert, cooldown suppression checks whether the same `(alertname, host)` is already claimed (queued or running) or was recently investigated — if so, the alert is skipped before Claude is invoked
+2. For each firing alert, cooldown suppression checks whether the same `(alertname, host, threadname)` is already claimed (queued or running) or was recently investigated — if so, the alert is skipped before Claude is invoked
 3. If not suppressed, the agent calls Claude Code CLI with a Prometheus MCP server
 4. Claude autonomously queries Prometheus — discovering metrics, drilling into per-peer data, correlating across hosts, and identifying root causes
-5. Posts the investigation findings as a structured Grafana annotation with tags `[ai-annotation, alertname, host, verdict]` where verdict is `benign`, `investigate`, or `action_required` (verdict tag omitted when structured parsing fails and raw text is posted as fallback)
+5. Posts the investigation findings as a structured Grafana annotation with tags `[ai-annotation, alertname, host, verdict]` (plus `threadname` for thread-aware alerts) where verdict is `benign`, `investigate`, or `action_required` (verdict tag omitted when structured parsing fails and raw text is posted as fallback)
 6. Logs telemetry with a stable [correlation ID](docs/telemetry.md) for end-to-end tracing
 
 ### Configuration

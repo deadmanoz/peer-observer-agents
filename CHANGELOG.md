@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-16
+
 ### Added
 
 - Thread-level CPU saturation detection via `PeerObserverThreadSaturation` alert support with per-thread investigation instructions
@@ -36,9 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Sanitize all untrusted fields (labels, annotations, prior context) in investigation prompts with XML data boundary tags to prevent prompt injection
-- Process multiple firing alerts concurrently within a webhook via `JoinSet` (previously serial), bounded by `ANNOTATION_AGENT_MAX_CONCURRENT` (default 4)
-- Kill entire Claude process group on timeout via `setsid` + `killpg`, ensuring MCP subprocesses are also cleaned up
+- Sanitize all untrusted fields (labels, annotations, prior context) in investigation prompts via XML entity escaping; XML boundary tags (`<alert-data>`, `<rpc-data>`, `<alert-context-data>`) delimit data sections to reinforce the instruction/data boundary
+- Process multiple firing alerts concurrently within a webhook via `JoinSet`; Claude invocations bounded by `ANNOTATION_AGENT_MAX_CONCURRENT` (default 4) via a `Semaphore`
+- Kill entire Claude process group on timeout via `setsid` + negative-PID `kill`, ensuring MCP subprocesses are also cleaned up
 - Drop Darwin from Nix flake `supportedSystems` (deployment target is NixOS/Linux only)
 - Make release script portable (replace BSD `sed -i ''` with temp-file pattern)
 
@@ -58,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow: fmt, clippy, test, nix build
 - Comprehensive documentation (deployment, testing, telemetry)
 
-[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/peer-observer/peer-observer-agents/releases/tag/v0.2.0
