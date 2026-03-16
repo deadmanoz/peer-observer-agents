@@ -391,7 +391,7 @@ pub(crate) async fn api_logs(
     check_auth(&headers, token)?;
 
     let path = state.log_file.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     // Reject malformed cursors with 400 instead of silently falling back to page 1.
     let before = match &query.before_cursor {

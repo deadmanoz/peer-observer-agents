@@ -162,6 +162,9 @@
       });
 
       if (resp.status === 401) {
+        clearInterval(REFRESH_TIMER);
+        REFRESH_TIMER = null;
+        document.getElementById('auto-refresh').checked = false;
         document.getElementById('auth-bar').classList.remove('hidden');
         document.getElementById('filters-bar').classList.add('hidden');
         status.textContent = 'Invalid token. Please try again.';
@@ -189,6 +192,9 @@
 
       if (!cursor) {
         ALL_ENTRIES = entries;
+        KNOWN_HOSTS = new Set();
+        KNOWN_ALERTS = new Set();
+        KNOWN_THREADS = new Set();
       } else {
         ALL_ENTRIES = ALL_ENTRIES.concat(entries);
       }
