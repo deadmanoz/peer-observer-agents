@@ -529,7 +529,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
             ).into()
         }
 
-        "PeerObserverThreadSaturation" if pq_threadname.is_empty() => {
+        "PeerObserverThreadSaturation" if threadname.is_empty() => {
             "The alert was fired without a `threadname` label. \
              Investigation cannot proceed without it — the threadname \
              is required to query per-thread CPU metrics. \
@@ -1038,7 +1038,7 @@ mod tests {
             ),
             (
                 "PeerObserverThreadSaturation",
-                "fired without a `threadname` label",
+                "Confirm saturation with PromQL",
             ),
             (
                 "PeerObserverAnomalyDetectionDown",
@@ -1047,10 +1047,16 @@ mod tests {
         ];
 
         for (name, unique_marker) in known_alerts {
-            let prompt = build_investigation_prompt(&AlertContext {
+            let mut ctx = AlertContext {
                 alertname: (*name).into(),
                 ..default_ctx()
-            });
+            };
+            // ThreadSaturation requires a non-empty threadname to hit the
+            // production investigation path (empty threadname hits the guard).
+            if *name == "PeerObserverThreadSaturation" {
+                ctx.threadname = "b-msghand".into();
+            }
+            let prompt = build_investigation_prompt(&ctx);
             assert!(
                 prompt.contains(unique_marker),
                 "prompt for {name} should contain specialized marker '{unique_marker}'"
