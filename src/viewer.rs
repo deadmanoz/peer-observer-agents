@@ -347,7 +347,8 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    // RFC 7235 §2.1: auth-scheme names are case-insensitive.
+    // Accept "Bearer" and "bearer" prefixes. Other capitalizations are
+    // theoretically valid per RFC 7235 §2.1 but not seen in practice.
     let token = header
         .strip_prefix("Bearer ")
         .or_else(|| header.strip_prefix("bearer "))
@@ -448,7 +449,10 @@ pub(crate) async fn api_logs(
         }
         let entry: LogEntry = match serde_json::from_str(&line) {
             Ok(e) => e,
-            Err(_) => continue, // skip malformed lines
+            Err(e) => {
+                warn!(path, error = %e, "skipping malformed JSONL line");
+                continue;
+            }
         };
 
         // Apply before_cursor filter — uses the same (logged_at, alert_id)
@@ -572,6 +576,10 @@ pub(crate) async fn logs_page(
         [
             ("x-frame-options", "DENY"),
             ("x-content-type-options", "nosniff"),
+            (
+                "content-security-policy",
+                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
+            ),
         ],
         Html(include_str!("viewer.html")),
     ))
