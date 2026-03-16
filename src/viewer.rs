@@ -333,6 +333,7 @@ pub(crate) struct LogsQuery {
 }
 
 /// Validate the Bearer token from the Authorization header.
+/// Uses constant-time comparison to prevent timing attacks.
 fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
     let header = headers
         .get("authorization")
@@ -341,10 +342,23 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
     let token = header
         .strip_prefix("Bearer ")
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    if token != expected {
+    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
         return Err(StatusCode::UNAUTHORIZED);
     }
     Ok(())
+}
+
+/// Constant-time byte slice comparison to prevent timing side-channels.
+/// Always compares all bytes regardless of where (or whether) they differ.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
 }
 
 /// `GET /api/logs` — reads the JSONL log file, applies server-side filters,
@@ -485,8 +499,9 @@ pub(crate) async fn api_logs(
         .into_response();
 
     if let Some(cursor) = next_cursor {
-        resp.headers_mut()
-            .insert("x-next-cursor", cursor.parse().unwrap());
+        if let Ok(hval) = cursor.parse() {
+            resp.headers_mut().insert("x-next-cursor", hval);
+        }
     }
 
     Ok(resp)
