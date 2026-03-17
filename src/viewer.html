@@ -570,7 +570,7 @@
     if (USE_LOCAL_TZ) {
       return partsToString(LOCAL_FMT.formatToParts(d));
     }
-    return partsToString(UTC_FMT.formatToParts(d)) + 'Z';
+    return partsToString(UTC_FMT.formatToParts(d)) + 'Z'; // UTC_FMT must never include timeZoneName
   }
 
   function formatDuration(ms) {
