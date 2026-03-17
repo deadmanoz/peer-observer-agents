@@ -310,9 +310,12 @@ const ZERO_WIDTH_CHARS: &[char] = &['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF
 /// characters (or string boundaries) on both sides. This prevents false positives
 /// like "urban peer" matching "ban peer" or "setbandwidth" matching "setban".
 ///
-/// Known limitation: bare "ban <IP>" without the word "peer" is not matched
-/// to avoid false positives on observational text. The RPC command `setban`
-/// is covered separately.
+/// Known limitations:
+/// - Bare "ban <IP>" without the word "peer" is not matched to avoid false
+///   positives on observational text. The RPC command `setban` is covered separately.
+/// - Unicode homoglyph/confusable characters (e.g., Cyrillic `а` for Latin `a`)
+///   are not normalized. This is accepted because Claude does not output confusable
+///   characters in practice — the prompt rewrite is the primary defense.
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let normalized: String = text
         .chars()
@@ -326,22 +329,18 @@ pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
 }
 
 /// Check if `pattern` appears in `text` with word boundaries on both sides.
-/// A word boundary means the adjacent character is non-alphanumeric or the
-/// match is at the start/end of the text.
+/// A word boundary means the adjacent character is not a word character or the
+/// match is at the start/end of the text. Word characters include alphanumerics,
+/// hyphens, and underscores (to avoid false positives on "peer-to-peer" etc.).
 fn has_word_boundary_match(text: &str, pattern: &str) -> bool {
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
     let mut idx = 0;
     while let Some(pos) = text[idx..].find(pattern) {
         let abs = idx + pos;
-        let preceded_by_word_char = abs > 0
-            && text[..abs]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric());
+        let preceded_by_word_char =
+            abs > 0 && text[..abs].chars().next_back().is_some_and(is_word_char);
         let end = abs + pattern.len();
-        let followed_by_word_char = text[end..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric());
+        let followed_by_word_char = text[end..].chars().next().is_some_and(is_word_char);
         if !preceded_by_word_char && !followed_by_word_char {
             return true;
         }
@@ -1008,6 +1007,11 @@ mod tests {
         assert!(contains_peer_intervention("setbandwidth 1000").is_none());
         // "disconnect and bank" must not trigger "disconnect and ban" match
         assert!(contains_peer_intervention("disconnect and bank transfer").is_none());
+        // "ban peer-to-peer" must not trigger "ban peer" match (hyphen is word char)
+        assert!(
+            contains_peer_intervention("do not ban peer-to-peer addr relay from this subnet")
+                .is_none()
+        );
     }
 
     // ── Peer-intervention policy (structured path) ────────────────────
