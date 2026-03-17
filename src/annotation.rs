@@ -284,6 +284,9 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
     "disconnect this peer",
     "disconnect peer",
     "disconnect peers",
+    "disconnecting the peer",
+    "disconnecting peer",
+    "disconnecting peers",
     "disconnect and ban",
     "ban the peer",
     "ban that peer",
@@ -291,7 +294,14 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
     "ban peer",
     "ban peers",
     "ban these peers",
+    "banning the peer",
+    "banning peer",
+    "banning peers",
 ];
+
+/// Zero-width Unicode characters that could be inserted between letters of
+/// a prohibited command to evade substring matching.
+const ZERO_WIDTH_CHARS: &[char] = &['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'];
 
 /// Check whether text contains peer-intervention commands.
 /// Returns `Some(pattern)` if a match is found, `None` if clean.
@@ -299,10 +309,10 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
 /// Uses word-boundary-aware matching: each pattern must have non-alphanumeric
 /// characters (or string boundaries) on both sides. This prevents false positives
 /// like "urban peer" matching "ban peer" or "setbandwidth" matching "setban".
-/// Zero-width Unicode characters that could be inserted between letters of
-/// a prohibited command to evade substring matching.
-const ZERO_WIDTH_CHARS: &[char] = &['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'];
-
+///
+/// Known limitation: bare "ban <IP>" without the word "peer" is not matched
+/// to avoid false positives on observational text. The RPC command `setban`
+/// is covered separately.
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let normalized: String = text
         .chars()
@@ -335,7 +345,10 @@ fn has_word_boundary_match(text: &str, pattern: &str) -> bool {
         if !preceded_by_word_char && !followed_by_word_char {
             return true;
         }
-        idx = abs + 1;
+        // Step past the first character of the match. All current patterns
+        // are ASCII (1 byte), but use char width for safety if non-ASCII
+        // patterns are ever added.
+        idx = abs + pattern.chars().next().map_or(1, |c| c.len_utf8());
     }
     false
 }
