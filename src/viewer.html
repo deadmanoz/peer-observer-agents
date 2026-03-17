@@ -96,9 +96,9 @@
     <select id="filter-host"><option value="">All hosts</option></select>
     <select id="filter-alertname"><option value="">All alerts</option></select>
     <select id="filter-threadname"><option value="">All threads</option></select>
-    <span class="filter-label">Logged after (local)</span>
+    <span class="filter-label" id="label-logged-after">Logged after (local)</span>
     <input type="datetime-local" id="filter-logged-after" step="1">
-    <span class="filter-label">Logged before (local)</span>
+    <span class="filter-label" id="label-logged-before">Logged before (local)</span>
     <input type="datetime-local" id="filter-logged-before" step="1">
     <input type="search" id="search-input" placeholder="Search loaded results...">
     <div class="controls">
@@ -219,12 +219,12 @@
       const loggedAfter = document.getElementById('filter-logged-after').value;
       const loggedBefore = document.getElementById('filter-logged-before').value;
       if (loggedAfter) {
-        const d = new Date(loggedAfter);
+        const d = USE_LOCAL_TZ ? new Date(loggedAfter) : new Date(loggedAfter + 'Z');
         if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged after" date'); return; }
         params.set('logged_after', d.toISOString());
       }
       if (loggedBefore) {
-        const d = new Date(loggedBefore);
+        const d = USE_LOCAL_TZ ? new Date(loggedBefore) : new Date(loggedBefore + 'Z');
         if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged before" date'); return; }
         params.set('logged_before', d.toISOString());
       }
@@ -605,9 +605,12 @@
     });
   }
 
-  // Timezone toggle — re-render without refetching
+  // Timezone toggle — re-render without refetching, update date filter labels
   document.getElementById('tz-toggle').addEventListener('change', function() {
     USE_LOCAL_TZ = this.value === 'local';
+    const tzLabel = USE_LOCAL_TZ ? 'local' : 'UTC';
+    document.getElementById('label-logged-after').textContent = 'Logged after (' + tzLabel + ')';
+    document.getElementById('label-logged-before').textContent = 'Logged before (' + tzLabel + ')';
     if (ALL_ENTRIES.length > 0) renderTable();
   });
 
