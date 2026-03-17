@@ -1,333 +1,18 @@
-//! Annotation log viewer — JSONL log entries, `/api/logs` API, and `/logs` HTML page.
-//!
-//! Enabled only when both `ANNOTATION_AGENT_LOG_FILE` and
-//! `ANNOTATION_AGENT_VIEWER_AUTH_TOKEN` are configured.
+//! `/api/logs` endpoint — reads the JSONL log file, applies server-side filters,
+//! returns newest-first entries as pure JSONL.
 
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::Html,
 };
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tracing::warn;
 
-use crate::{AppState, ClaudeOutput};
-
-// ── JSONL schema (v1) ───────────────────────────────────────────────
-
-/// Schema version for forward compatibility.
-const SCHEMA_VERSION: u8 = 1;
-
-/// Distinguishes structured annotation entries from raw fallback entries.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum EntryKind {
-    Structured,
-    RawFallback,
-}
-
-/// Telemetry from the Claude CLI invocation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Telemetry {
-    pub(crate) num_turns: u64,
-    pub(crate) duration_ms: u64,
-    pub(crate) duration_api_ms: u64,
-    pub(crate) cost_usd: f64,
-    pub(crate) input_tokens: u64,
-    pub(crate) output_tokens: u64,
-    pub(crate) stop_reason: String,
-    pub(crate) session_id: String,
-}
-
-impl From<&ClaudeOutput> for Telemetry {
-    fn from(co: &ClaudeOutput) -> Self {
-        Self {
-            num_turns: co.num_turns,
-            duration_ms: co.duration_ms,
-            duration_api_ms: co.duration_api_ms,
-            cost_usd: co.cost_usd,
-            input_tokens: co.input_tokens,
-            output_tokens: co.output_tokens,
-            stop_reason: co.stop_reason.clone(),
-            session_id: co.session_id.clone(),
-        }
-    }
-}
-
-/// A single JSONL log entry written after each successful annotation post.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LogEntry {
-    /// Schema version (always 1 for now).
-    pub(crate) v: u8,
-    /// Wall-clock time when this entry was appended to the log.
-    /// Used for newest-first ordering and cursor pagination.
-    pub(crate) logged_at: DateTime<Utc>,
-    /// Alert start time from Alertmanager.
-    pub(crate) alert_starts_at: DateTime<Utc>,
-    /// Stable correlation ID (e.g., "AlertName:host:20250615T120000Z").
-    pub(crate) alert_id: String,
-    pub(crate) alertname: String,
-    pub(crate) host: String,
-    pub(crate) threadname: String,
-    /// Whether this entry has structured annotation fields or raw fallback text.
-    pub(crate) entry_kind: EntryKind,
-    // Structured fields (present when entry_kind == Structured)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) verdict: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) action: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cause: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) scope: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) evidence: Option<Vec<String>>,
-    // Raw fallback (present when entry_kind == RawFallback)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) raw_text: Option<String>,
-    pub(crate) telemetry: Telemetry,
-}
-
-impl LogEntry {
-    /// Create a LogEntry for a structured annotation.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn structured(
-        alert_starts_at: DateTime<Utc>,
-        alert_id: String,
-        alertname: String,
-        host: String,
-        threadname: String,
-        verdict: &str,
-        action: Option<String>,
-        summary: String,
-        cause: String,
-        scope: String,
-        evidence: Vec<String>,
-        telemetry: Telemetry,
-    ) -> Self {
-        Self {
-            v: SCHEMA_VERSION,
-            logged_at: Utc::now(),
-            alert_starts_at,
-            alert_id,
-            alertname,
-            host,
-            threadname,
-            entry_kind: EntryKind::Structured,
-            verdict: Some(verdict.to_string()),
-            action,
-            summary: Some(summary),
-            cause: Some(cause),
-            scope: Some(scope),
-            evidence: Some(evidence),
-            raw_text: None,
-            telemetry,
-        }
-    }
-
-    /// Create a LogEntry for a raw fallback (unparseable Claude output).
-    pub(crate) fn raw_fallback(
-        alert_starts_at: DateTime<Utc>,
-        alert_id: String,
-        alertname: String,
-        host: String,
-        threadname: String,
-        raw_text: String,
-        telemetry: Telemetry,
-    ) -> Self {
-        Self {
-            v: SCHEMA_VERSION,
-            logged_at: Utc::now(),
-            alert_starts_at,
-            alert_id,
-            alertname,
-            host,
-            threadname,
-            entry_kind: EntryKind::RawFallback,
-            verdict: None,
-            action: None,
-            summary: None,
-            cause: None,
-            scope: None,
-            evidence: None,
-            raw_text: Some(raw_text),
-            telemetry,
-        }
-    }
-}
-
-/// Append a JSONL log entry to the configured log file.
-///
-/// Serializes writes via the provided mutex to prevent interleaved bytes
-/// when concurrent investigations complete simultaneously. `O_APPEND` alone
-/// does not guarantee atomicity for payloads larger than `PIPE_BUF` (~4 KB),
-/// and raw fallback entries can exceed that limit.
-pub(crate) async fn append_jsonl_log(
-    path: &str,
-    entry: &LogEntry,
-    write_mutex: &tokio::sync::Mutex<()>,
-) {
-    let mut line = match serde_json::to_string(entry) {
-        Ok(json) => json,
-        Err(e) => {
-            warn!("failed to serialize log entry: {e}");
-            return;
-        }
-    };
-    line.push('\n');
-    let _guard = write_mutex.lock().await;
-    match tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .await
-    {
-        Ok(mut f) => {
-            use tokio::io::AsyncWriteExt;
-            if let Err(e) = f.write_all(line.as_bytes()).await {
-                warn!(path, error = %e, "failed to write JSONL log entry");
-            } else if let Err(e) = f.flush().await {
-                warn!(path, error = %e, "failed to flush JSONL log entry");
-            }
-        }
-        Err(e) => warn!(path, error = %e, "failed to open JSONL log file"),
-    }
-}
-
-// ── Cursor pagination ───────────────────────────────────────────────
-
-/// Opaque cursor encoding `(logged_at, alert_id)` as base64.
-fn encode_cursor(logged_at: &DateTime<Utc>, alert_id: &str) -> String {
-    let raw = format!("{}|{}", logged_at.to_rfc3339(), alert_id);
-    base64_encode(&raw)
-}
-
-fn decode_cursor(cursor: &str) -> Option<(DateTime<Utc>, String)> {
-    let raw = base64_decode(cursor)?;
-    let (ts_str, alert_id) = raw.split_once('|')?;
-    let ts = ts_str.parse::<DateTime<Utc>>().ok()?;
-    Some((ts, alert_id.to_string()))
-}
-
-/// URL-safe base64 encoding without pulling in a crate.
-/// Uses the URL-safe alphabet (A-Z, a-z, 0-9, -, _) with no padding,
-/// so the output is safe to embed directly in URL query parameters
-/// without percent-encoding.
-fn base64_encode(input: &str) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
-        }
-    }
-    out
-}
-
-fn base64_decode(input: &str) -> Option<String> {
-    const DECODE: [u8; 128] = {
-        let mut table = [255u8; 128];
-        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut i = 0;
-        while i < 64 {
-            table[alphabet[i] as usize] = i as u8;
-            i += 1;
-        }
-        table
-    };
-    let input = input.trim_end_matches('=');
-    if input.is_empty() {
-        return Some(String::new());
-    }
-    let mut bytes = Vec::with_capacity(input.len() * 3 / 4);
-    // Reject any non-base64 characters instead of silently dropping them.
-    let mut chars = Vec::with_capacity(input.len());
-    for b in input.bytes() {
-        if b >= 128 || DECODE[b as usize] == 255 {
-            return None; // invalid character
-        }
-        chars.push(DECODE[b as usize]);
-    }
-    for chunk in chars.chunks(4) {
-        if chunk.len() < 2 {
-            return None; // len % 4 == 1 is invalid base64
-        }
-        let b0 = (chunk[0] as u32) << 18
-            | (chunk[1] as u32) << 12
-            | if chunk.len() > 2 {
-                (chunk[2] as u32) << 6
-            } else {
-                0
-            }
-            | if chunk.len() > 3 { chunk[3] as u32 } else { 0 };
-        bytes.push((b0 >> 16) as u8);
-        if chunk.len() > 2 {
-            bytes.push((b0 >> 8) as u8);
-        }
-        if chunk.len() > 3 {
-            bytes.push(b0 as u8);
-        }
-    }
-    String::from_utf8(bytes).ok()
-}
-
-// ── Heap entry for bounded top-N collection ─────────────────────────
-
-/// Wrapper around `LogEntry` that implements `Ord` by `(logged_at, alert_id)`
-/// for use in a min-heap. The smallest entry (oldest by total order) sits at
-/// the top so it can be evicted when the heap exceeds the collection bound.
-struct HeapEntry {
-    logged_at: DateTime<Utc>,
-    alert_id: String,
-    entry: LogEntry,
-}
-
-impl HeapEntry {
-    fn from_log_entry(entry: LogEntry) -> Self {
-        Self {
-            logged_at: entry.logged_at,
-            alert_id: entry.alert_id.clone(),
-            entry,
-        }
-    }
-}
-
-impl PartialEq for HeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        (&self.logged_at, &self.alert_id) == (&other.logged_at, &other.alert_id)
-    }
-}
-
-impl Eq for HeapEntry {}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (&self.logged_at, &self.alert_id).cmp(&(&other.logged_at, &other.alert_id))
-    }
-}
-
-// ── API endpoint: GET /api/logs ─────────────────────────────────────
+use super::cursor::{decode_cursor, encode_cursor, HeapEntry};
+use super::log_schema::{EntryKind, LogEntry};
+use crate::state::AppState;
 
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
@@ -557,210 +242,12 @@ pub(crate) async fn api_logs(
     Ok(resp)
 }
 
-// ── HTML page: GET /logs ────────────────────────────────────────────
-
-/// `GET /logs` — serves the self-contained HTML log viewer.
-///
-/// Intentionally unauthenticated: the HTML shell contains no investigation data.
-/// The bearer token is entered client-side and passed via `Authorization` header
-/// on `/api/logs` fetch calls. This means unauthenticated visitors can see that
-/// the viewer exists and learn the API endpoint URL, but cannot access log data
-/// without a valid token.
-pub(crate) async fn logs_page(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl axum::response::IntoResponse, StatusCode> {
-    // Feature gate: only serve when both log file and auth token are configured.
-    // This is NOT an auth check — see doc comment above.
-    if state.viewer_auth_token.is_none() || state.log_file.is_none() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    Ok((
-        [
-            ("x-frame-options", "DENY"),
-            ("x-content-type-options", "nosniff"),
-            (
-                "content-security-policy",
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
-            ),
-        ],
-        Html(include_str!("viewer.html")),
-    ))
-}
-
-// ── Tests ───────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
+    use super::super::log_file::append_jsonl_log;
+    use super::super::log_schema::tests::{sample_structured_entry, sample_telemetry};
     use super::*;
-    use chrono::TimeZone;
-
-    fn sample_telemetry() -> Telemetry {
-        Telemetry {
-            num_turns: 12,
-            duration_ms: 58000,
-            duration_api_ms: 45000,
-            cost_usd: 0.04,
-            input_tokens: 18000,
-            output_tokens: 2500,
-            stop_reason: "end_turn".into(),
-            session_id: "test-session".into(),
-        }
-    }
-
-    fn sample_structured_entry() -> LogEntry {
-        LogEntry::structured(
-            Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
-            "PeerObserverBlockStale:bitcoin-03:20250615T120000Z".into(),
-            "PeerObserverBlockStale".into(),
-            "bitcoin-03".into(),
-            String::new(),
-            "benign",
-            None,
-            "No new block in 47 minutes, all hosts at same height.".into(),
-            "Normal mining variance.".into(),
-            "multi-host".into(),
-            vec![
-                "last_block: 47 min ago".into(),
-                "all hosts synced at 890421".into(),
-            ],
-            sample_telemetry(),
-        )
-    }
-
-    fn sample_raw_fallback_entry() -> LogEntry {
-        LogEntry::raw_fallback(
-            Utc.with_ymd_and_hms(2025, 6, 15, 13, 0, 0).unwrap(),
-            "TestAlert:bitcoin-03:20250615T130000Z".into(),
-            "TestAlert".into(),
-            "bitcoin-03".into(),
-            String::new(),
-            "Claude output that failed to parse as structured JSON.".into(),
-            sample_telemetry(),
-        )
-    }
-
-    // ── Serialization round-trip ────────────────────────────────────
-
-    #[test]
-    fn structured_entry_roundtrip() {
-        let entry = sample_structured_entry();
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.v, 1);
-        assert_eq!(parsed.entry_kind, EntryKind::Structured);
-        assert_eq!(parsed.verdict.as_deref(), Some("benign"));
-        assert_eq!(parsed.alertname, "PeerObserverBlockStale");
-        assert_eq!(parsed.host, "bitcoin-03");
-        assert!(parsed.threadname.is_empty());
-        assert!(parsed.raw_text.is_none());
-        assert_eq!(parsed.evidence.as_ref().unwrap().len(), 2);
-        assert_eq!(parsed.telemetry.num_turns, 12);
-        assert!((parsed.telemetry.cost_usd - 0.04).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn raw_fallback_entry_roundtrip() {
-        let entry = sample_raw_fallback_entry();
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.entry_kind, EntryKind::RawFallback);
-        assert!(parsed.verdict.is_none());
-        assert!(parsed.summary.is_none());
-        assert!(parsed.evidence.is_none());
-        assert_eq!(
-            parsed.raw_text.as_deref(),
-            Some("Claude output that failed to parse as structured JSON.")
-        );
-    }
-
-    #[test]
-    fn structured_entry_skips_none_fields() {
-        let entry = sample_structured_entry();
-        let json = serde_json::to_string(&entry).unwrap();
-        // raw_text should not be in the JSON
-        assert!(!json.contains("raw_text"));
-        // action should not be in the JSON (it's None for benign)
-        assert!(!json.contains("\"action\""));
-    }
-
-    #[test]
-    fn raw_fallback_entry_skips_structured_fields() {
-        let entry = sample_raw_fallback_entry();
-        let json = serde_json::to_string(&entry).unwrap();
-        assert!(!json.contains("\"verdict\""));
-        assert!(!json.contains("\"summary\""));
-        assert!(!json.contains("\"cause\""));
-        assert!(!json.contains("\"scope\""));
-        assert!(!json.contains("\"evidence\""));
-    }
-
-    #[test]
-    fn entry_has_logged_at_and_alert_starts_at() {
-        let entry = sample_structured_entry();
-        // logged_at is set to Utc::now() in the constructor, alert_starts_at is from the alert
-        assert_eq!(
-            entry.alert_starts_at,
-            Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap()
-        );
-        // logged_at should be recent (within the last second)
-        let now = Utc::now();
-        assert!(
-            (now - entry.logged_at).num_seconds().abs() < 2,
-            "logged_at should be close to now"
-        );
-    }
-
-    // ── Cursor encoding/decoding ────────────────────────────────────
-
-    #[test]
-    fn cursor_roundtrip() {
-        let ts = Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap();
-        let alert_id = "PeerObserverBlockStale:bitcoin-03:20250615T120000Z";
-        let encoded = encode_cursor(&ts, alert_id);
-        let (decoded_ts, decoded_id) = decode_cursor(&encoded).unwrap();
-        assert_eq!(decoded_ts, ts);
-        assert_eq!(decoded_id, alert_id);
-    }
-
-    #[test]
-    fn cursor_decode_invalid() {
-        assert!(decode_cursor("not-valid-base64!!!").is_none());
-        assert!(decode_cursor("").is_none());
-    }
-
-    #[test]
-    fn base64_rejects_trailing_garbage() {
-        // A valid base64 string with trailing non-base64 chars must be rejected,
-        // not silently decoded by dropping the garbage.
-        let ts = Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap();
-        let alert_id = "Test:host:ts";
-        let valid = encode_cursor(&ts, alert_id);
-        let tampered = format!("{}!!!", valid);
-        assert!(
-            decode_cursor(&tampered).is_none(),
-            "cursor with trailing garbage should be rejected"
-        );
-    }
-
-    #[test]
-    fn base64_roundtrip() {
-        let inputs = [
-            "",
-            "a",
-            "ab",
-            "abc",
-            "abcd",
-            "hello world!",
-            "2025-06-15T12:00:00+00:00|AlertName:host:ts",
-        ];
-        for input in inputs {
-            let encoded = base64_encode(input);
-            let decoded = base64_decode(&encoded).unwrap();
-            assert_eq!(decoded, input, "roundtrip failed for {input:?}");
-        }
-    }
-
-    // ── Auth checking ───────────────────────────────────────────────
+    use chrono::{TimeZone, Utc};
 
     #[test]
     fn check_auth_valid_token() {
@@ -797,74 +284,6 @@ mod tests {
             Err(StatusCode::UNAUTHORIZED)
         );
     }
-
-    // ── XSS safety ──────────────────────────────────────────────────
-
-    #[test]
-    fn raw_fallback_preserves_script_tags_literally() {
-        let malicious = r#"<script>alert('xss')</script><img onerror="alert(1)" src=x>"#;
-        let entry = LogEntry::raw_fallback(
-            Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
-            "TestAlert:host:20250615T120000Z".into(),
-            "TestAlert".into(),
-            "host".into(),
-            String::new(),
-            malicious.to_string(),
-            sample_telemetry(),
-        );
-        let json = serde_json::to_string(&entry).unwrap();
-        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
-        // The raw_text field must round-trip the literal script tag string.
-        // XSS safety: the viewer renders raw_text via textContent only (never innerHTML).
-        // The JSON transport itself may or may not escape angle brackets — that's fine,
-        // because the safety boundary is in the DOM rendering, not the wire format.
-        assert_eq!(parsed.raw_text.as_deref(), Some(malicious));
-    }
-
-    // ── JSONL file reading (integration test with temp file) ────────
-
-    #[tokio::test]
-    async fn append_and_read_jsonl() {
-        // Use a unique temp file to avoid interference between parallel
-        // test runs in sandboxed CI (Nix build sandbox).
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "peer-observer-jsonl-test-{}-append.jsonl",
-            std::process::id()
-        ));
-        let path_str = path.to_str().unwrap();
-
-        // Clean up any previous test file
-        let _ = tokio::fs::remove_file(&path).await;
-
-        let entry1 = sample_structured_entry();
-        let entry2 = sample_raw_fallback_entry();
-
-        let test_mutex = tokio::sync::Mutex::new(());
-        append_jsonl_log(path_str, &entry1, &test_mutex).await;
-        append_jsonl_log(path_str, &entry2, &test_mutex).await;
-
-        // Read back and verify
-        let contents = tokio::fs::read_to_string(&path).await.unwrap();
-        let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(
-            lines.len(),
-            2,
-            "expected 2 JSONL lines, got {}: {:?}",
-            lines.len(),
-            contents
-        );
-
-        let parsed1: LogEntry = serde_json::from_str(lines[0]).unwrap();
-        let parsed2: LogEntry = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(parsed1.entry_kind, EntryKind::Structured);
-        assert_eq!(parsed2.entry_kind, EntryKind::RawFallback);
-
-        // Cleanup
-        let _ = tokio::fs::remove_file(&path).await;
-    }
-
-    // ── API handler (integration test with axum) ────────────────────
 
     #[tokio::test]
     async fn api_logs_requires_auth() {
@@ -906,7 +325,7 @@ mod tests {
             .route("/api/logs", get(api_logs))
             .with_state(state);
 
-        // No auth header → 401
+        // No auth header -> 401
         let req = Request::builder()
             .method("GET")
             .uri("/api/logs")
@@ -915,7 +334,7 @@ mod tests {
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        // Wrong token → 401
+        // Wrong token -> 401
         let req = Request::builder()
             .method("GET")
             .uri("/api/logs")
@@ -925,7 +344,7 @@ mod tests {
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        // Valid token → 200
+        // Valid token -> 200
         let req = Request::builder()
             .method("GET")
             .uri("/api/logs")
@@ -1495,95 +914,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logs_page_returns_html_when_enabled() {
-        use axum::body::Body;
-        use axum::http::Request;
-        use axum::routing::get;
-        use axum::Router;
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-
-        let state = Arc::new(AppState {
-            grafana_url: "http://localhost:3000".into(),
-            grafana_api_key: "test-key".into(),
-            claude_bin: "echo".into(),
-            claude_model: "claude-sonnet-4-6".into(),
-            mcp_config: "/dev/null".into(),
-            log_file: Some("/tmp/test.jsonl".into()),
-            claude_timeout: std::time::Duration::from_secs(600),
-            http: reqwest::Client::new(),
-            rpc_client: None,
-            investigation_semaphore: tokio::sync::Semaphore::new(4),
-            cooldown: std::time::Duration::ZERO,
-            cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
-            viewer_auth_token: Some("token".into()),
-            log_write_mutex: tokio::sync::Mutex::new(()),
-        });
-
-        let app = Router::new()
-            .route("/logs", get(logs_page))
-            .with_state(state);
-
-        let req = Request::builder()
-            .method("GET")
-            .uri("/logs")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains("<!DOCTYPE html>"));
-        assert!(html.contains("Annotation Log"));
-    }
-
-    #[tokio::test]
-    async fn logs_page_returns_404_when_disabled() {
-        use axum::body::Body;
-        use axum::http::Request;
-        use axum::routing::get;
-        use axum::Router;
-        use tower::ServiceExt;
-
-        // No viewer_auth_token
-        let state = Arc::new(AppState {
-            grafana_url: "http://localhost:3000".into(),
-            grafana_api_key: "test-key".into(),
-            claude_bin: "echo".into(),
-            claude_model: "claude-sonnet-4-6".into(),
-            mcp_config: "/dev/null".into(),
-            log_file: Some("/tmp/test.jsonl".into()),
-            claude_timeout: std::time::Duration::from_secs(600),
-            http: reqwest::Client::new(),
-            rpc_client: None,
-            investigation_semaphore: tokio::sync::Semaphore::new(4),
-            cooldown: std::time::Duration::ZERO,
-            cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
-            viewer_auth_token: None,
-            log_write_mutex: tokio::sync::Mutex::new(()),
-        });
-
-        let app = Router::new()
-            .route("/logs", get(logs_page))
-            .with_state(state);
-
-        let req = Request::builder()
-            .method("GET")
-            .uri("/logs")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn routes_absent_when_no_log_file() {
         use axum::body::Body;
         use axum::http::Request;
         use axum::routing::get;
         use axum::Router;
         use tower::ServiceExt;
+
+        use super::super::html::logs_page;
 
         // No log_file
         let state = Arc::new(AppState {
