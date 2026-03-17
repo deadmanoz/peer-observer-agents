@@ -2,6 +2,28 @@ use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use std::fmt;
 
+/// Error from `parse_structured_annotation` — distinguishes policy violations
+/// from structural/format failures so callers can route logging correctly.
+#[derive(Debug)]
+pub(crate) enum AnnotationError {
+    /// The JSON was parsed and structurally valid, but contained a prohibited
+    /// peer-intervention command.
+    PolicyViolation(String),
+    /// JSON parsing or structural validation failed.
+    ParseError(anyhow::Error),
+}
+
+impl fmt::Display for AnnotationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AnnotationError::PolicyViolation(msg) => write!(f, "{msg}"),
+            AnnotationError::ParseError(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for AnnotationError {}
+
 /// Investigation verdict indicating whether operator action is needed.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,7 +145,7 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 /// Discriminating substring in policy-violation error messages, shared between
 /// `check_peer_intervention_policy` (producer) and `main.rs` (consumer) to avoid
 /// fragile string matching against the full error text.
-pub(crate) const POLICY_ERROR_MARKER: &str = "peer-intervention";
+const POLICY_ERROR_MARKER: &str = "peer-intervention";
 
 /// Check content policy: reject annotations containing peer-intervention commands.
 ///
@@ -158,7 +180,13 @@ fn check_peer_intervention_policy(ann: &StructuredAnnotation) -> Result<()> {
 /// Extracts the JSON object from the string before deserialising, tolerating
 /// code fences, preambles, or trailing commentary that Claude may add despite
 /// the strict prompt instruction.
-pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
+///
+/// Returns `AnnotationError::PolicyViolation` if the annotation is structurally
+/// valid but contains prohibited peer-intervention commands, or
+/// `AnnotationError::ParseError` for JSON/structural failures.
+pub(crate) fn parse_structured_annotation(
+    raw: &str,
+) -> std::result::Result<StructuredAnnotation, AnnotationError> {
     let mut ann: StructuredAnnotation = serde_json::from_str(raw)
         .or_else(|first_err| {
             extract_json_object(raw)
@@ -168,9 +196,11 @@ pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotat
                         .context("extracted JSON object failed to deserialize")
                 })
         })
-        .context("Claude output is not valid StructuredAnnotation JSON")?;
-    validate_structured_annotation(&ann)?;
-    check_peer_intervention_policy(&ann)?;
+        .context("Claude output is not valid StructuredAnnotation JSON")
+        .map_err(AnnotationError::ParseError)?;
+    validate_structured_annotation(&ann).map_err(AnnotationError::ParseError)?;
+    check_peer_intervention_policy(&ann)
+        .map_err(|e| AnnotationError::PolicyViolation(e.to_string()))?;
     // Normalize benign action to None so consumers don't need to re-filter
     // empty string / "none" variants that passed validation.
     if ann.verdict == Verdict::Benign {

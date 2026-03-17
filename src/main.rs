@@ -11,7 +11,7 @@ mod types;
 mod viewer;
 
 use crate::annotation::{
-    parse_structured_annotation, render_annotation_html, sanitize_raw_fallback, POLICY_ERROR_MARKER,
+    parse_structured_annotation, render_annotation_html, sanitize_raw_fallback, AnnotationError,
 };
 use crate::cooldown::{try_claim_cooldown, CooldownKey, SuppressReason, DEFAULT_COOLDOWN_SECS};
 use crate::correlation::AlertId;
@@ -333,53 +333,51 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
             append_log(state, alert, aid, Some(&ann), None, &telemetry).await;
             info!(alert_id = %aid, verdict = %ann.verdict, "annotation posted successfully");
         }
-        Err(e) => {
-            let is_policy = e.to_string().contains(POLICY_ERROR_MARKER);
-            if is_policy {
-                // Structured path detected a policy violation (e.g., via deserialized
-                // fields that resolved JSON Unicode escapes). Force redaction regardless
-                // of whether the raw scan also catches it.
+        Err(AnnotationError::PolicyViolation(msg)) => {
+            // Structured path detected a policy violation (e.g., via deserialized
+            // fields that resolved JSON Unicode escapes). Force redaction regardless
+            // of whether the raw scan also catches it.
+            warn!(
+                alert_id = %aid,
+                error = %msg,
+                "structured annotation rejected by peer-intervention policy"
+            );
+            let stub = "Investigation output contained a prohibited peer-intervention \
+                        command. Original text redacted.";
+            post_grafana_annotation(
+                state,
+                alert,
+                aid,
+                &format!("<b>POLICY VIOLATION:</b> {stub}"),
+                None,
+            )
+            .await?;
+            append_log(state, alert, aid, None, Some(stub), &telemetry).await;
+            info!(alert_id = %aid, "annotation posted (policy violation stub)");
+        }
+        Err(AnnotationError::ParseError(e)) => {
+            warn!(
+                alert_id = %aid,
+                error = %e,
+                "failed to parse structured annotation, using raw text"
+            );
+            let fallback = sanitize_raw_fallback(&claude_output.result);
+            if fallback.policy_violated {
                 warn!(
                     alert_id = %aid,
-                    error = %e,
-                    "structured annotation rejected by peer-intervention policy"
+                    "raw annotation redacted: peer-intervention command detected"
                 );
-                let stub = "Investigation output contained a prohibited peer-intervention \
-                            command. Original text redacted.";
-                post_grafana_annotation(
-                    state,
-                    alert,
-                    aid,
-                    &format!("<b>POLICY VIOLATION:</b> {stub}"),
-                    None,
-                )
-                .await?;
-                append_log(state, alert, aid, None, Some(stub), &telemetry).await;
-            } else {
-                warn!(
-                    alert_id = %aid,
-                    error = %e,
-                    "failed to parse structured annotation, using raw text"
-                );
-                let fallback = sanitize_raw_fallback(&claude_output.result);
-                if fallback.policy_violated {
-                    warn!(
-                        alert_id = %aid,
-                        raw_text = %claude_output.result,
-                        "raw annotation redacted: peer-intervention command detected"
-                    );
-                }
-                post_grafana_annotation(state, alert, aid, &fallback.grafana_body, None).await?;
-                append_log(
-                    state,
-                    alert,
-                    aid,
-                    None,
-                    Some(&fallback.log_text),
-                    &telemetry,
-                )
-                .await;
             }
+            post_grafana_annotation(state, alert, aid, &fallback.grafana_body, None).await?;
+            append_log(
+                state,
+                alert,
+                aid,
+                None,
+                Some(&fallback.log_text),
+                &telemetry,
+            )
+            .await;
             info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
         }
     }
