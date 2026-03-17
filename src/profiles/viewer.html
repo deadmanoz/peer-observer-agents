@@ -197,12 +197,13 @@
     }
   })();
 
-  // Auto-detect proxy auth (skip if already authenticated via session restore)
+  // Auto-detect proxy auth (skip if already authenticated via session restore or manual auth)
   (async function detectProxyAuth() {
     if (TOKEN) return;
     try {
       var resp = await fetch('/api/peers/stats');
-      if (resp.ok) {
+      // Re-check after await — user may have authenticated manually while fetch was in-flight
+      if (resp.ok && !TOKEN && !PROXY_AUTH) {
         PROXY_AUTH = true;
         document.getElementById('auth-bar').classList.add('hidden');
         document.getElementById('filters-bar').classList.remove('hidden');

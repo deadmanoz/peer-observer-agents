@@ -47,7 +47,7 @@ CREATE TABLE software_history (
     version         INTEGER NOT NULL,
     services        TEXT NOT NULL
 );
-CREATE INDEX idx_swh_peer_time ON software_history(peer_id, observed_at);
+CREATE INDEX idx_swh_peer_host_time ON software_history(peer_id, host, observed_at);
 
 CREATE TABLE presence_windows (
     window_id       INTEGER PRIMARY KEY,
@@ -499,14 +499,10 @@ impl ProfileDb {
                     "DELETE FROM software_history WHERE history_id IN (
                         SELECT sh.history_id FROM software_history sh
                         WHERE sh.observed_at < ?1
-                        AND sh.history_id NOT IN (
-                            SELECT sh2.history_id FROM software_history sh2
-                            WHERE sh2.history_id = (
-                                SELECT sh3.history_id FROM software_history sh3
-                                WHERE sh3.peer_id = sh2.peer_id AND sh3.host = sh2.host
-                                ORDER BY sh3.observed_at DESC LIMIT 1
-                            )
-                            GROUP BY sh2.peer_id, sh2.host
+                        AND EXISTS (
+                            SELECT 1 FROM software_history sh2
+                            WHERE sh2.peer_id = sh.peer_id AND sh2.host = sh.host
+                            AND sh2.observed_at > sh.observed_at
                         )
                         LIMIT 10000
                     )",
