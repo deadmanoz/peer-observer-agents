@@ -77,17 +77,9 @@ pub(crate) fn try_claim_cooldown(
         Some(CooldownState::InFlight) => Err(SuppressReason::InFlight),
         Some(CooldownState::Completed(at)) => {
             let ago = at.elapsed();
-            if ago < window {
-                Err(SuppressReason::RecentlyCompleted { ago })
-            } else {
-                // Expired — reclaim.
-                locked.insert(key.clone(), CooldownState::InFlight);
-                Ok(CooldownGuard {
-                    key,
-                    map,
-                    completed: false,
-                })
-            }
+            // retain() above already evicted expired entries under the same lock,
+            // so ago < window is always true here.
+            Err(SuppressReason::RecentlyCompleted { ago })
         }
         None => {
             locked.insert(key.clone(), CooldownState::InFlight);
