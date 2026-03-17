@@ -149,6 +149,9 @@
   // Set the Local option label to show the IANA zone ID.
   document.getElementById('tz-local-option').textContent = 'Local (' + USER_TZ + ')';
 
+  // Page size for peer list pagination.
+  const PAGE_SIZE = 100;
+
   // Monotonic request ID to discard stale responses.
   let REQUEST_ID = 0;
 
@@ -308,7 +311,7 @@
     var host = document.getElementById('filter-host').value;
     if (network) params.set('network', network);
     if (host) params.set('host', host);
-    params.set('limit', '100');
+    params.set('limit', String(PAGE_SIZE));
     params.set('offset', String(offset || 0));
 
     try {
@@ -333,7 +336,7 @@
       if (myRequestId !== REQUEST_ID) return;
 
       var peers = Array.isArray(data) ? data : (data.peers || []);
-      HAS_MORE = peers.length === 100;
+      HAS_MORE = peers.length === PAGE_SIZE;
 
       if (!offset) {
         ALL_PEERS = peers;

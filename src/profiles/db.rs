@@ -277,7 +277,7 @@ impl ProfileDb {
                 active_windows.iter().map(|(_, pid)| *pid).collect();
 
             // Step 4: Continuing peers — update last_observed
-            for peer_id in &seen_peer_ids {
+            for peer_id in &seen_set {
                 if active_peer_ids.contains(peer_id) {
                     conn.execute(
                         "UPDATE presence_windows SET last_observed = ?1 WHERE peer_id = ?2 AND host = ?3 AND closed = 0",
@@ -287,7 +287,7 @@ impl ProfileDb {
             }
 
             // Step 5: New peers — insert new windows
-            for peer_id in &seen_peer_ids {
+            for peer_id in &seen_set {
                 if !active_peer_ids.contains(peer_id) {
                     conn.execute(
                         "INSERT INTO presence_windows (peer_id, host, first_observed, last_observed, closed) VALUES (?1, ?2, ?3, ?3, 0)",
@@ -500,7 +500,12 @@ impl ProfileDb {
                         SELECT sh.history_id FROM software_history sh
                         WHERE sh.observed_at < ?1
                         AND sh.history_id NOT IN (
-                            SELECT MAX(sh2.history_id) FROM software_history sh2
+                            SELECT sh2.history_id FROM software_history sh2
+                            WHERE sh2.history_id = (
+                                SELECT sh3.history_id FROM software_history sh3
+                                WHERE sh3.peer_id = sh2.peer_id AND sh3.host = sh2.host
+                                ORDER BY sh3.observed_at DESC LIMIT 1
+                            )
                             GROUP BY sh2.peer_id, sh2.host
                         )
                         LIMIT 10000
