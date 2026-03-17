@@ -209,16 +209,18 @@
     if (alertname) params.set('alertname', alertname);
     if (threadname) params.set('threadname', threadname);
 
-    // Date range filters — convert datetime-local (browser local time) to ISO 8601.
-    const loggedAfter = document.getElementById('filter-logged-after').value;
-    const loggedBefore = document.getElementById('filter-logged-before').value;
-    if (loggedAfter) params.set('logged_after', new Date(loggedAfter).toISOString());
-    if (loggedBefore) params.set('logged_before', new Date(loggedBefore).toISOString());
-
     params.set('limit', '200');
     if (cursor) params.set('before_cursor', cursor);
 
     try {
+      // Date range filters — convert datetime-local (browser local time) to ISO 8601.
+      // Inside the try block so a malformed date (e.g. from programmatic mutation)
+      // falls through to the catch handler instead of leaving the UI stuck.
+      const loggedAfter = document.getElementById('filter-logged-after').value;
+      const loggedBefore = document.getElementById('filter-logged-before').value;
+      if (loggedAfter) params.set('logged_after', new Date(loggedAfter).toISOString());
+      if (loggedBefore) params.set('logged_before', new Date(loggedBefore).toISOString());
+
       const fetchOpts = PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
       const resp = await fetch('/api/logs?' + params.toString(), fetchOpts);
 
