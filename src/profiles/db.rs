@@ -536,9 +536,10 @@ impl ProfileDb {
     }
 
     /// Delete orphaned peers whose last_seen is older than the cutoff and who have
-    /// no remaining observations or presence windows. Runs atomically in a single
-    /// transaction to prevent TOCTOU races with concurrent poll_host: the software
-    /// history anchor cleanup and peer deletion see a consistent snapshot.
+    /// no remaining observations or presence windows. Runs in a single transaction
+    /// for atomicity: if the peer DELETE fails after the software_history DELETE,
+    /// both are rolled back. (Concurrency is already serialized by the mutex —
+    /// the transaction prevents inconsistency on error, not on interleaving.)
     ///
     /// Note: holds the mutex for the entire transaction. On first deployment after
     /// a long accumulation period this could block API reads briefly. Acceptable
@@ -572,10 +573,11 @@ impl ProfileDb {
             )?;
 
             tx.commit()?;
-            if sw_deleted > 0 {
+            if deleted > 0 || sw_deleted > 0 {
                 tracing::info!(
-                    sw_history_deleted = sw_deleted,
-                    "cleaned up software_history anchors for orphaned peers"
+                    peers_deleted = deleted,
+                    sw_anchors_deleted = sw_deleted,
+                    "pruned orphaned peers"
                 );
             }
             Ok(deleted)

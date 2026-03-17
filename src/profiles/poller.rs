@@ -68,14 +68,9 @@ pub fn start_poller(
                 _ => {}
             }
 
-            match db.prune_orphaned_peers(&cutoff_str).await {
-                Ok(deleted) if deleted > 0 => {
-                    info!(deleted, "pruned orphaned peers");
-                }
-                Err(e) => {
-                    warn!(error = %e, "orphaned peer pruning failed");
-                }
-                _ => {}
+            // prune_orphaned_peers logs both peer and sw_history counts internally
+            if let Err(e) = db.prune_orphaned_peers(&cutoff_str).await {
+                warn!(error = %e, "orphaned peer pruning failed");
             }
 
             // Weekly incremental vacuum — compute polls-per-week from actual interval
