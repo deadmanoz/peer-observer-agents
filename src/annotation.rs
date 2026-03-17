@@ -56,7 +56,12 @@ pub(crate) struct StructuredAnnotation {
     pub(crate) evidence: Vec<String>,
 }
 
-/// Validate a structured annotation against the schema contract.
+/// Validate a structured annotation against the schema contract (structure only).
+///
+/// This checks field presence, emptiness, evidence count, and verdict-action
+/// consistency. It does NOT check content policy (peer-intervention commands).
+/// Used by `extract_json_object` to identify valid annotation JSON among
+/// preamble/commentary text.
 fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
     ensure!(
         !ann.summary.trim().is_empty(),
@@ -112,7 +117,16 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
         }
     }
 
-    // Policy: reject annotations containing peer-intervention commands in any text field.
+    Ok(())
+}
+
+/// Check content policy: reject annotations containing peer-intervention commands.
+///
+/// Separated from `validate_structured_annotation` so that `extract_json_object`
+/// can identify structurally valid JSON without policy errors causing it to skip
+/// the real annotation object. Policy violations surface in `parse_structured_annotation`
+/// with a clear error message, not as a misleading "failed to parse" fallback.
+fn check_peer_intervention_policy(ann: &StructuredAnnotation) -> Result<()> {
     let all_text_fields = [
         ann.action.as_deref().unwrap_or(""),
         &ann.summary,
@@ -151,6 +165,7 @@ pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotat
         })
         .context("Claude output is not valid StructuredAnnotation JSON")?;
     validate_structured_annotation(&ann)?;
+    check_peer_intervention_policy(&ann)?;
     // Normalize benign action to None so consumers don't need to re-filter
     // empty string / "none" variants that passed validation.
     if ann.verdict == Verdict::Benign {
@@ -226,6 +241,7 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
     "ban the peer",
     "ban that peer",
     "ban this peer",
+    "ban peer",
     "ban peers",
     "ban these peers",
 ];
@@ -809,6 +825,7 @@ mod tests {
         assert!(contains_peer_intervention("ban the peer for 24 hours").is_some());
         assert!(contains_peer_intervention("disconnect and ban 1.2.3.4").is_some());
         assert!(contains_peer_intervention("disconnect peers with high misbehavior").is_some());
+        assert!(contains_peer_intervention("ban peer 192.168.1.1 as it is sending spam").is_some());
         assert!(contains_peer_intervention("ban these peers for 24 hours").is_some());
         assert!(contains_peer_intervention("ban peers sending spam").is_some());
     }
@@ -863,6 +880,21 @@ mod tests {
         let json = r#"{"verdict":"action_required","action":"systemctl restart bitcoind on bitcoin-01",
             "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
         assert!(parse_structured_annotation(json).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_policy_violation_in_preamble_wrapped_json() {
+        // When Claude outputs preamble + JSON with a prohibited command,
+        // the policy error must surface as "peer-intervention", not as a
+        // misleading "failed to parse structured annotation" format error.
+        let wrapped = r#"Here is the analysis:
+{"verdict":"action_required","action":"run bitcoin-cli disconnectnode 1.2.3.4:8333",
+"summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        let err = parse_structured_annotation(wrapped).unwrap_err();
+        assert!(
+            err.to_string().contains("peer-intervention"),
+            "preamble-wrapped policy violation should surface as peer-intervention error, got: {err}"
+        );
     }
 
     #[test]
