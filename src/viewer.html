@@ -542,11 +542,11 @@
   // UTC mode suffixes with 'Z', Local mode suffixes with short tz name (e.g. 'GMT+8').
   const UTC_FMT = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
   });
   const LOCAL_FMT = new Intl.DateTimeFormat('en-GB', {
     timeZone: USER_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
     timeZoneName: 'short'
   });
 
