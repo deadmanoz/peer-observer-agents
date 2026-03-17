@@ -98,16 +98,21 @@ pub(crate) async fn api_logs(
 
     // Parse date range filters. Reject malformed dates with 400.
     // Empty strings are treated as absent (same as omitting the parameter).
+    // Parse via FixedOffset to explicitly handle any RFC 3339 offset, then
+    // convert to Utc — avoids relying on undocumented DateTime<Utc>::FromStr
+    // behaviour for non-UTC offsets.
     let logged_after: Option<DateTime<Utc>> = match &query.logged_after {
         Some(s) if !s.is_empty() => Some(
-            s.parse::<DateTime<Utc>>()
+            s.parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|_| StatusCode::BAD_REQUEST)?,
         ),
         _ => None,
     };
     let logged_before: Option<DateTime<Utc>> = match &query.logged_before {
         Some(s) if !s.is_empty() => Some(
-            s.parse::<DateTime<Utc>>()
+            s.parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|_| StatusCode::BAD_REQUEST)?,
         ),
         _ => None,
