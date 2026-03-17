@@ -258,8 +258,7 @@ impl ProfileDb {
             )?;
             let active_windows: Vec<(i64, i64)> = stmt
                 .query_map(params![host], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             let seen_set: std::collections::HashSet<i64> =
                 seen_peer_ids.iter().copied().collect();
@@ -390,8 +389,7 @@ impl ProfileDb {
             )?;
             let active_windows: Vec<(i64, i64)> = stmt
                 .query_map(params![host], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
 
             let active_peer_ids: std::collections::HashSet<i64> =
@@ -692,7 +690,7 @@ impl ProfileDb {
 
             // Software history
             let mut sw_stmt = conn.prepare(
-                "SELECT history_id, peer_id, host, observed_at, subversion, version, services FROM software_history WHERE peer_id = ?1 ORDER BY observed_at DESC"
+                "SELECT history_id, peer_id, host, observed_at, subversion, version, services FROM software_history WHERE peer_id = ?1 ORDER BY observed_at DESC LIMIT 200"
             )?;
             let software_history: Vec<SoftwareChange> = sw_stmt
                 .query_map(params![peer_id], |row| {
