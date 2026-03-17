@@ -248,12 +248,36 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
 
 /// Check whether text contains peer-intervention commands.
 /// Returns `Some(pattern)` if a match is found, `None` if clean.
+///
+/// Uses word-boundary-aware matching: each pattern must either start at the
+/// beginning of the text or be preceded by a non-alphanumeric character.
+/// This prevents false positives like "urban peer" matching "ban peer".
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
     PEER_INTERVENTION_PATTERNS
         .iter()
-        .find(|p| lower.contains(**p))
+        .find(|p| has_word_boundary_match(&lower, p))
         .copied()
+}
+
+/// Check if `pattern` appears in `text` with a word boundary before it.
+/// A word boundary means the character before the match is non-alphanumeric
+/// or the match starts at the beginning of the text.
+fn has_word_boundary_match(text: &str, pattern: &str) -> bool {
+    let mut idx = 0;
+    while let Some(pos) = text[idx..].find(pattern) {
+        let abs = idx + pos;
+        let preceded_by_word_char = abs > 0
+            && text[..abs]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric());
+        if !preceded_by_word_char {
+            return true;
+        }
+        idx = abs + 1;
+    }
+    false
 }
 
 /// Result of checking raw fallback text against the peer-intervention policy.
@@ -845,6 +869,12 @@ mod tests {
         assert!(contains_peer_intervention("peer was previously banned").is_none());
         // "bandwidth" should not trigger
         assert!(contains_peer_intervention("high bandwidth usage").is_none());
+        // "urban peer" / "suburban peer" must not trigger "ban peer" match
+        assert!(
+            contains_peer_intervention("the urban peer cluster shows elevated addr volumes")
+                .is_none()
+        );
+        assert!(contains_peer_intervention("suburban peer group has high latency").is_none());
     }
 
     // ── Peer-intervention policy (structured path) ────────────────────

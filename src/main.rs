@@ -334,14 +334,24 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
             info!(alert_id = %aid, verdict = %ann.verdict, "annotation posted successfully");
         }
         Err(e) => {
-            warn!(
-                alert_id = %aid,
-                error = %e,
-                "failed to parse structured annotation, using raw text"
-            );
+            let is_policy = e.to_string().contains("peer-intervention");
+            if is_policy {
+                warn!(
+                    alert_id = %aid,
+                    error = %e,
+                    "structured annotation rejected by peer-intervention policy, using raw fallback"
+                );
+            } else {
+                warn!(
+                    alert_id = %aid,
+                    error = %e,
+                    "failed to parse structured annotation, using raw text"
+                );
+            }
             let fallback = sanitize_raw_fallback(&claude_output.result);
-            if fallback.policy_violated {
-                // Log full original text to tracing only — NOT persisted in viewer log.
+            if fallback.policy_violated && !is_policy {
+                // Raw text also violated — log for debugging (structured path didn't catch it
+                // because it failed to parse, not because of policy).
                 warn!(
                     alert_id = %aid,
                     raw_text = %claude_output.result,
