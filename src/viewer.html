@@ -549,11 +549,11 @@
   }
 
   // Stable YYYY-MM-DD HH:MM:SS formatter using formatToParts.
-  // Both formatters include timeZoneName so partsToString handles the suffix uniformly.
+  // UTC_FMT omits timeZoneName — formatTime appends ' Z' directly, because
+  // Intl's short name for UTC is locale-dependent ('GMT' in en-GB, 'UTC' in en-US).
   const UTC_FMT = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
-    timeZoneName: 'short'
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
   });
   const LOCAL_FMT = new Intl.DateTimeFormat('en-GB', {
     timeZone: USER_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -579,7 +579,7 @@
     if (USE_LOCAL_TZ) {
       return partsToString(LOCAL_FMT.formatToParts(d));
     }
-    return partsToString(UTC_FMT.formatToParts(d));
+    return partsToString(UTC_FMT.formatToParts(d)) + ' Z';
   }
 
   function formatDuration(ms) {
