@@ -441,64 +441,82 @@ impl ProfileDb {
         .await?
     }
 
-    /// Delete observations older than the given ISO 8601 cutoff, in batches.
-    /// Returns the total number of rows deleted.
-    pub async fn prune_observations(&self, cutoff: &str) -> Result<usize> {
+    /// Maximum rows deleted per prune batch. Used in both the LIMIT clause
+    /// of each prune SQL and the loop termination check.
+    const PRUNE_BATCH_SIZE: usize = 10_000;
+
+    /// Run a single batch delete, acquiring and releasing the mutex once.
+    /// The closure receives a locked connection and must return the number of
+    /// rows deleted. This pattern avoids passing raw SQL strings through the
+    /// API surface.
+    async fn prune_batch(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<usize> + Send + 'static,
+    ) -> Result<usize> {
         let conn = Arc::clone(&self.conn);
-        let cutoff = cutoff.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            let mut total_deleted = 0usize;
-            loop {
-                let deleted = conn.execute(
-                    "DELETE FROM observations WHERE observation_id IN (SELECT observation_id FROM observations WHERE observed_at < ?1 LIMIT 10000)",
-                    params![cutoff],
-                )?;
-                total_deleted += deleted;
-                if deleted < 10000 {
-                    break;
-                }
-            }
-            Ok(total_deleted)
+            let deleted = f(&conn)?;
+            Ok(deleted)
         })
         .await?
+    }
+
+    /// Run batched deletes via a closure factory, releasing the mutex between
+    /// batches so API reads can interleave during large prune operations.
+    async fn prune_loop(
+        &self,
+        make_batch: impl Fn(
+            String,
+        )
+            -> Box<dyn FnOnce(&rusqlite::Connection) -> rusqlite::Result<usize> + Send>,
+        cutoff: &str,
+    ) -> Result<usize> {
+        let mut total_deleted = 0usize;
+        loop {
+            let batch_fn = make_batch(cutoff.to_string());
+            let deleted = self.prune_batch(batch_fn).await?;
+            total_deleted += deleted;
+            if deleted < Self::PRUNE_BATCH_SIZE {
+                break;
+            }
+        }
+        Ok(total_deleted)
+    }
+
+    /// Delete observations older than the given ISO 8601 cutoff, in batches.
+    pub async fn prune_observations(&self, cutoff: &str) -> Result<usize> {
+        let limit = Self::PRUNE_BATCH_SIZE;
+        self.prune_loop(
+            move |cutoff| {
+                let sql = format!("DELETE FROM observations WHERE observation_id IN (SELECT observation_id FROM observations WHERE observed_at < ?1 LIMIT {limit})");
+                Box::new(move |conn: &rusqlite::Connection| conn.execute(&sql, params![cutoff]))
+            },
+            cutoff,
+        )
+        .await
     }
 
     /// Delete closed presence windows older than the given ISO 8601 cutoff, in batches.
-    /// Returns the total number of rows deleted.
     pub async fn prune_closed_presence_windows(&self, cutoff: &str) -> Result<usize> {
-        let conn = Arc::clone(&self.conn);
-        let cutoff = cutoff.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut total_deleted = 0usize;
-            loop {
-                let deleted = conn.execute(
-                    "DELETE FROM presence_windows WHERE window_id IN (SELECT window_id FROM presence_windows WHERE closed = 1 AND last_observed < ?1 LIMIT 10000)",
-                    params![cutoff],
-                )?;
-                total_deleted += deleted;
-                if deleted < 10000 {
-                    break;
-                }
-            }
-            Ok(total_deleted)
-        })
-        .await?
+        let limit = Self::PRUNE_BATCH_SIZE;
+        self.prune_loop(
+            move |cutoff| {
+                let sql = format!("DELETE FROM presence_windows WHERE window_id IN (SELECT window_id FROM presence_windows WHERE closed = 1 AND last_observed < ?1 LIMIT {limit})");
+                Box::new(move |conn: &rusqlite::Connection| conn.execute(&sql, params![cutoff]))
+            },
+            cutoff,
+        )
+        .await
     }
 
     /// Delete software history entries older than the given ISO 8601 cutoff, in batches.
-    /// Preserves the most recent row per (peer_id, host) to prevent false re-detection
-    /// of unchanged software after pruning.
-    /// Returns the total number of rows deleted.
+    /// Preserves the most recent row per (peer_id, host) to prevent false re-detection.
     pub async fn prune_software_history(&self, cutoff: &str) -> Result<usize> {
-        let conn = Arc::clone(&self.conn);
-        let cutoff = cutoff.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut total_deleted = 0usize;
-            loop {
-                let deleted = conn.execute(
+        let limit = Self::PRUNE_BATCH_SIZE;
+        self.prune_loop(
+            move |cutoff| {
+                let sql = format!(
                     "DELETE FROM software_history WHERE history_id IN (
                         SELECT sh.history_id FROM software_history sh
                         WHERE sh.observed_at < ?1
@@ -507,16 +525,67 @@ impl ProfileDb {
                             WHERE sh2.peer_id = sh.peer_id AND sh2.host = sh.host
                             AND sh2.observed_at > sh.observed_at
                         )
-                        LIMIT 10000
-                    )",
-                    params![cutoff],
-                )?;
-                total_deleted += deleted;
-                if deleted < 10000 {
-                    break;
-                }
+                        LIMIT {limit}
+                    )"
+                );
+                Box::new(move |conn: &rusqlite::Connection| conn.execute(&sql, params![cutoff]))
+            },
+            cutoff,
+        )
+        .await
+    }
+
+    /// Delete orphaned peers whose last_seen is older than the cutoff and who have
+    /// no remaining observations or presence windows. Runs in a single transaction
+    /// for atomicity: if the peer DELETE fails after the software_history DELETE,
+    /// both are rolled back. (Concurrency is already serialized by the mutex —
+    /// the transaction prevents inconsistency on error, not on interleaving.)
+    ///
+    /// Note: holds the mutex for the entire transaction. On first deployment after
+    /// a long accumulation period this could block API reads briefly. Acceptable
+    /// because orphan counts are bounded by total unique peers (~hundreds), not
+    /// by observation volume (~millions).
+    ///
+    /// Limitation: peers with unclosed presence windows (e.g. from a poller crash
+    /// before stale-window recovery ran) will not be pruned. Under normal operation
+    /// the poller's stale-window recovery closes these promptly.
+    pub async fn prune_orphaned_peers(&self, cutoff: &str) -> Result<usize> {
+        let conn = Arc::clone(&self.conn);
+        let cutoff = cutoff.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().unwrap();
+            let tx = conn.transaction()?;
+
+            // Delete all remaining software_history rows for orphan candidates,
+            // including the anchor rows preserved by prune_software_history.
+            let sw_deleted = tx.execute(
+                "DELETE FROM software_history WHERE peer_id IN (
+                    SELECT p.peer_id FROM peers p
+                    WHERE p.last_seen < ?1
+                    AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.peer_id = p.peer_id)
+                    AND NOT EXISTS (SELECT 1 FROM presence_windows pw WHERE pw.peer_id = p.peer_id)
+                )",
+                params![cutoff],
+            )?;
+
+            // Delete the orphaned peer rows.
+            let deleted = tx.execute(
+                "DELETE FROM peers WHERE last_seen < ?1
+                 AND NOT EXISTS (SELECT 1 FROM observations WHERE observations.peer_id = peers.peer_id)
+                 AND NOT EXISTS (SELECT 1 FROM presence_windows WHERE presence_windows.peer_id = peers.peer_id)
+                 AND NOT EXISTS (SELECT 1 FROM software_history WHERE software_history.peer_id = peers.peer_id)",
+                params![cutoff],
+            )?;
+
+            tx.commit()?;
+            if deleted > 0 || sw_deleted > 0 {
+                tracing::info!(
+                    peers_deleted = deleted,
+                    sw_anchors_deleted = sw_deleted,
+                    "pruned orphaned peers"
+                );
             }
-            Ok(total_deleted)
+            Ok(deleted)
         })
         .await?
     }

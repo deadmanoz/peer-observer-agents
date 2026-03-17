@@ -68,6 +68,11 @@ pub fn start_poller(
                 _ => {}
             }
 
+            // prune_orphaned_peers logs both peer and sw_history counts internally
+            if let Err(e) = db.prune_orphaned_peers(&cutoff_str).await {
+                warn!(error = %e, "orphaned peer pruning failed");
+            }
+
             // Weekly incremental vacuum — compute polls-per-week from actual interval
             let polls_per_week = if poll_interval.as_secs() == 0 {
                 1
@@ -122,10 +127,9 @@ async fn poll_host(
         let services = peer["servicesnames"]
             .as_array()
             .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
+                let mut names: Vec<_> = arr.iter().filter_map(|v| v.as_str()).collect();
+                names.sort_unstable();
+                names.join(",")
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
