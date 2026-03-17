@@ -114,7 +114,7 @@ pub(crate) async fn api_logs(
 
     // Reject inverted ranges — a 400 is clearer than silently returning empty results.
     if let (Some(ref after), Some(ref before)) = (&logged_after, &logged_before) {
-        if after > before {
+        if after >= before {
             return Err(StatusCode::BAD_REQUEST);
         }
     }
