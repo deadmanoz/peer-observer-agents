@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tracing::info;
 
 /// Default cooldown window (seconds) for suppressing retriggers of the same
 /// `(alertname, host, threadname)` tuple. 0 = disabled.
@@ -40,6 +39,9 @@ impl<'a> CooldownGuard<'a> {
             let mut locked = self.map.lock().unwrap_or_else(|e| e.into_inner());
             locked.insert(self.key.clone(), CooldownState::Completed(Instant::now()));
         }
+        // ORDERING: `completed` must be set AFTER the insert returns. If `completed`
+        // were true before the insert and the insert panicked, Drop would skip cleanup
+        // and leave a stale `InFlight` entry permanently suppressing this key.
         self.completed = true;
     }
 }
@@ -72,21 +74,10 @@ pub(crate) fn try_claim_cooldown(
     });
 
     match locked.get(&key) {
-        Some(CooldownState::InFlight) => {
-            info!(
-                alertname = %key.0, host = %key.1, threadname = %key.2,
-                "suppressed: investigation already in flight"
-            );
-            Err(SuppressReason::InFlight)
-        }
+        Some(CooldownState::InFlight) => Err(SuppressReason::InFlight),
         Some(CooldownState::Completed(at)) => {
             let ago = at.elapsed();
             if ago < window {
-                info!(
-                    alertname = %key.0, host = %key.1, threadname = %key.2,
-                    ago_secs = ago.as_secs(),
-                    "suppressed: investigation completed recently"
-                );
                 Err(SuppressReason::RecentlyCompleted { ago })
             } else {
                 // Expired — reclaim.
