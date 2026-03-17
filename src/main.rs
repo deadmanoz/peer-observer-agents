@@ -372,8 +372,7 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
             if fallback.policy_violated {
                 warn!(
                     alert_id = %aid,
-                    pattern = fallback.matched_pattern
-                        .expect("matched_pattern must be Some when policy_violated"),
+                    pattern = fallback.matched_pattern.unwrap_or("unknown"),
                     "raw annotation redacted: peer-intervention command detected"
                 );
                 // Forensic audit — mirrors the structured PolicyViolation path.

@@ -428,8 +428,10 @@ fn decode_unicode_escapes(s: &str) -> String {
     while i < bytes.len() {
         // Look for \u followed by exactly 4 hex digits
         if bytes[i] == b'\\' && i + 5 < bytes.len() && bytes[i + 1] == b'u' {
-            let hex = &s[i + 2..i + 6];
-            if hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            let hex_bytes = &bytes[i + 2..i + 6];
+            if hex_bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+                // Safety: all bytes are ASCII hex digits, so this is valid UTF-8.
+                let hex = std::str::from_utf8(hex_bytes).expect("all ASCII hex");
                 if let Ok(code) = u32::from_str_radix(hex, 16) {
                     if let Some(decoded) = char::from_u32(code) {
                         out.push(decoded);
