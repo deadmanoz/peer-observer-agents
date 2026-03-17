@@ -100,7 +100,6 @@ pub(crate) async fn api_logs(
     let logged_after: Option<DateTime<Utc>> = match &query.logged_after {
         Some(s) => Some(
             s.parse::<DateTime<Utc>>()
-                .or_else(|_| DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
                 .map_err(|_| StatusCode::BAD_REQUEST)?,
         ),
         None => None,
@@ -108,7 +107,6 @@ pub(crate) async fn api_logs(
     let logged_before: Option<DateTime<Utc>> = match &query.logged_before {
         Some(s) => Some(
             s.parse::<DateTime<Utc>>()
-                .or_else(|_| DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
                 .map_err(|_| StatusCode::BAD_REQUEST)?,
         ),
         None => None,
