@@ -112,9 +112,10 @@ pub(crate) async fn api_logs(
         None => None,
     };
 
-    // Reject inverted ranges — a 400 is clearer than silently returning empty results.
+    // Reject inverted ranges with 400. A zero-width interval [T, T) is valid
+    // (returns empty 200), consistent with other no-match filter combinations.
     if let (Some(ref after), Some(ref before)) = (&logged_after, &logged_before) {
-        if after >= before {
+        if after > before {
             return Err(StatusCode::BAD_REQUEST);
         }
     }
@@ -1010,10 +1011,10 @@ mod tests {
 
     /// Helper: create test entries with deterministic logged_at timestamps.
     /// Returns entries at 20:00:00, 20:00:01, 20:00:02, 20:00:03 on 2025-06-15.
-    async fn write_date_range_entries(log_path_str: &str) {
-        // The mutex is local to this helper; each test uses a unique file path,
-        // and writes complete before the test app is started.
-        let test_mutex = tokio::sync::Mutex::new(());
+    /// Uses the AppState's log_write_mutex so the lock is the same one the
+    /// running server would use.
+    async fn write_date_range_entries(state: &AppState) {
+        let log_path_str = state.log_file.as_deref().unwrap();
         for i in 0u32..4 {
             let mut entry = LogEntry::structured(
                 Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
@@ -1034,7 +1035,7 @@ mod tests {
                 sample_telemetry(),
             );
             entry.logged_at = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, i).unwrap();
-            append_jsonl_log(log_path_str, &entry, &test_mutex).await;
+            append_jsonl_log(log_path_str, &entry, &state.log_write_mutex).await;
         }
     }
 
@@ -1084,11 +1085,12 @@ mod tests {
         let log_path_str = log_path.to_str().unwrap().to_string();
         let _ = tokio::fs::remove_file(&log_path).await;
 
-        write_date_range_entries(&log_path_str).await;
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
 
         let app = Router::new()
             .route("/api/logs", get(api_logs))
-            .with_state(make_test_state(log_path_str));
+            .with_state(state);
 
         // logged_after=20:00:02 — should include entries at :02 and :03 (inclusive lower bound)
         let req = Request::builder()
@@ -1128,11 +1130,12 @@ mod tests {
         let log_path_str = log_path.to_str().unwrap().to_string();
         let _ = tokio::fs::remove_file(&log_path).await;
 
-        write_date_range_entries(&log_path_str).await;
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
 
         let app = Router::new()
             .route("/api/logs", get(api_logs))
-            .with_state(make_test_state(log_path_str));
+            .with_state(state);
 
         // logged_before=20:00:02 — should include entries at :00 and :01 (exclusive upper bound)
         let req = Request::builder()
@@ -1171,11 +1174,12 @@ mod tests {
         let log_path_str = log_path.to_str().unwrap().to_string();
         let _ = tokio::fs::remove_file(&log_path).await;
 
-        write_date_range_entries(&log_path_str).await;
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
 
         let app = Router::new()
             .route("/api/logs", get(api_logs))
-            .with_state(make_test_state(log_path_str));
+            .with_state(state);
 
         // Half-open [20:00:01, 20:00:03) — should include entries at :01 and :02
         let req = Request::builder()
@@ -1214,11 +1218,12 @@ mod tests {
         let log_path_str = log_path.to_str().unwrap().to_string();
         let _ = tokio::fs::remove_file(&log_path).await;
 
-        write_date_range_entries(&log_path_str).await;
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
 
         let app = Router::new()
             .route("/api/logs", get(api_logs))
-            .with_state(make_test_state(log_path_str));
+            .with_state(state);
 
         // Exact boundary: logged_after == logged_at of entry at :01 (inclusive, should match)
         // and logged_before == logged_at of entry at :02 (exclusive, should NOT match)
@@ -1310,9 +1315,8 @@ mod tests {
 
         // Entries: Alert0/bitcoin-03@:00, Alert1/bitcoin-03@:01,
         //          Alert2/vps-dev-01@:02, Alert3/vps-dev-01@:03
-        write_date_range_entries(&log_path_str).await;
-
         let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
 
         let app = Router::new()
             .route("/api/logs", get(api_logs))
@@ -1380,11 +1384,12 @@ mod tests {
         let _ = tokio::fs::remove_file(&log_path).await;
 
         // Entries at 20:00:00Z .. 20:00:03Z
-        write_date_range_entries(&log_path_str).await;
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
 
         let app = Router::new()
             .route("/api/logs", get(api_logs))
-            .with_state(make_test_state(log_path_str));
+            .with_state(state);
 
         // logged_after with +08:00 offset: 2025-06-16T04:00:01+08:00 == 2025-06-15T20:00:01Z
         // logged_before with +08:00 offset: 2025-06-16T04:00:03+08:00 == 2025-06-15T20:00:03Z

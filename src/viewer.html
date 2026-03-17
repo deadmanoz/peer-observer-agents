@@ -144,6 +144,11 @@
   // Set the Local option label to show the IANA zone ID.
   document.getElementById('tz-local-option').textContent = 'Local (' + USER_TZ + ')';
 
+  // Sync date filter labels with the runtime tz state (handles bfcache restore).
+  const initTzLabel = USE_LOCAL_TZ ? 'local' : 'UTC';
+  document.getElementById('label-logged-after').textContent = 'Logged after (' + initTzLabel + ')';
+  document.getElementById('label-logged-before').textContent = 'Logged before (' + initTzLabel + ')';
+
   // Safe status message helper (uses textContent, not innerHTML).
   function showStatus(container, text) {
     container.innerHTML = '';
