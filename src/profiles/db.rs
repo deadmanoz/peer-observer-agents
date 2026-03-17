@@ -345,14 +345,17 @@ impl ProfileDb {
                     params![peer_id, host, now, peer.addr_with_port, peer.inbound as i32, peer.connection_type, peer.conntime, peer.starting_height, peer.synced_headers, peer.synced_blocks],
                 )?;
 
-                // Software change detection
-                let latest: Option<(String, i64, String)> = tx
-                    .query_row(
-                        "SELECT subversion, version, services FROM software_history WHERE peer_id = ?1 AND host = ?2 ORDER BY observed_at DESC LIMIT 1",
-                        params![peer_id, host],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .ok();
+                // Software change detection — only treat "no rows" as None;
+                // propagate real DB errors to roll back the transaction.
+                let latest: Option<(String, i64, String)> = match tx.query_row(
+                    "SELECT subversion, version, services FROM software_history WHERE peer_id = ?1 AND host = ?2 ORDER BY observed_at DESC LIMIT 1",
+                    params![peer_id, host],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                ) {
+                    Ok(row) => Some(row),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                    Err(e) => return Err(anyhow::Error::from(e)),
+                };
 
                 let changed = match latest {
                     None => true,
