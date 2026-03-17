@@ -549,10 +549,11 @@
   }
 
   // Stable YYYY-MM-DD HH:MM:SS formatter using formatToParts.
-  // UTC mode suffixes with 'Z', Local mode suffixes with short tz name (e.g. 'GMT+8').
+  // Both formatters include timeZoneName so partsToString handles the suffix uniformly.
   const UTC_FMT = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    timeZoneName: 'short'
   });
   const LOCAL_FMT = new Intl.DateTimeFormat('en-GB', {
     timeZone: USER_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -578,7 +579,7 @@
     if (USE_LOCAL_TZ) {
       return partsToString(LOCAL_FMT.formatToParts(d));
     }
-    return partsToString(UTC_FMT.formatToParts(d)) + 'Z'; // UTC_FMT must never include timeZoneName
+    return partsToString(UTC_FMT.formatToParts(d));
   }
 
   function formatDuration(ms) {

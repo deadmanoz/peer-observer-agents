@@ -112,6 +112,13 @@ pub(crate) async fn api_logs(
         None => None,
     };
 
+    // Reject inverted ranges — a 400 is clearer than silently returning empty results.
+    if let (Some(ref after), Some(ref before)) = (&logged_after, &logged_before) {
+        if after > before {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
     // Forward-scan the file, collecting all matching entries.
     let file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
