@@ -3,6 +3,7 @@ mod cooldown;
 mod correlation;
 mod grafana;
 mod investigation;
+mod profiles;
 mod prompt;
 mod rpc;
 mod state;
@@ -111,6 +112,33 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Peer profiles configuration
+    let profiles_poll_interval_secs: u64 = env::var("ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+
+    let profiles_retention_days: u64 = env::var("ANNOTATION_AGENT_PROFILES_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(90);
+
+    let profile_db = match env::var("ANNOTATION_AGENT_PROFILES_DB") {
+        Ok(db_path) if !db_path.is_empty() => {
+            let db = profiles::ProfileDb::open(&db_path)
+                .with_context(|| format!("failed to open profiles DB at {db_path}"))?;
+            if rpc_client.is_none() {
+                warn!("profiles DB configured but no RPC hosts — poller disabled");
+            }
+            info!(path = %db_path, "peer profiles DB opened");
+            Some(db)
+        }
+        _ => {
+            info!("peer profiles disabled (ANNOTATION_AGENT_PROFILES_DB not set)");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         grafana_url: env::var("ANNOTATION_AGENT_GRAFANA_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:9321".to_string()),
@@ -152,6 +180,9 @@ async fn main() -> Result<()> {
         investigation_semaphore: Semaphore::new(max_concurrent),
         cooldown: Duration::from_secs(cooldown_secs),
         cooldown_map: std::sync::Mutex::new(HashMap::new()),
+        profile_db,
+        profiles_poll_interval: Duration::from_secs(profiles_poll_interval_secs),
+        profiles_retention_days,
     });
 
     if state.cooldown.is_zero() {
@@ -163,7 +194,23 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Start profiles poller if both DB and RPC are configured
+    if let (Some(ref db), Some(ref rpc)) = (&state.profile_db, &state.rpc_client) {
+        profiles::poller::start_poller(
+            Arc::clone(db),
+            Arc::new(rpc.clone()),
+            state.profiles_poll_interval,
+            state.profiles_retention_days,
+        );
+        info!(
+            poll_interval_secs = profiles_poll_interval_secs,
+            retention_days = profiles_retention_days,
+            "peer profiles poller started"
+        );
+    }
+
     let viewer_enabled = state.log_file.is_some() && state.viewer_auth_token.is_some();
+    let profiles_viewer_enabled = state.profile_db.is_some() && state.viewer_auth_token.is_some();
 
     let mut app = Router::new()
         .route("/healthz", get(healthz))
@@ -174,6 +221,15 @@ async fn main() -> Result<()> {
             .route("/logs", get(viewer::logs_page))
             .route("/api/logs", get(viewer::api_logs));
         info!("viewer enabled at /logs and /api/logs");
+    }
+
+    if profiles_viewer_enabled {
+        app = app
+            .route("/peers", get(profiles::api::peers_page))
+            .route("/api/peers", get(profiles::api::api_peers))
+            .route("/api/peers/stats", get(profiles::api::api_peers_stats))
+            .route("/api/peers/{id}", get(profiles::api::api_peer_detail));
+        info!("peer profiles viewer enabled at /peers and /api/peers/*");
     }
 
     let app = app.with_state(state);
@@ -373,6 +429,9 @@ mod tests {
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
             viewer_auth_token: None,
             log_write_mutex: tokio::sync::Mutex::new(()),
+            profile_db: None,
+            profiles_poll_interval: Duration::from_secs(300),
+            profiles_retention_days: 90,
         })
     }
 
@@ -468,6 +527,9 @@ mod tests {
             cooldown_map: std::sync::Mutex::new(map),
             viewer_auth_token: None,
             log_write_mutex: tokio::sync::Mutex::new(()),
+            profile_db: None,
+            profiles_poll_interval: Duration::from_secs(300),
+            profiles_retention_days: 90,
         })
     }
 

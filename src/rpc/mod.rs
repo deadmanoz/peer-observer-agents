@@ -34,6 +34,7 @@ struct JsonRpcResponse {
 }
 
 /// Client for Bitcoin Core JSON-RPC over WireGuard.
+#[derive(Clone)]
 pub struct RpcClient {
     http: reqwest::Client,
     /// Maps host names (from alert labels) to validated WireGuard IPs.
@@ -139,6 +140,20 @@ impl RpcClient {
         rpc_resp
             .result
             .with_context(|| format!("RPC {method} returned null result"))
+    }
+
+    /// Returns all configured host names (owned for ergonomic use in async contexts).
+    pub fn host_names(&self) -> Vec<String> {
+        self.hosts.keys().cloned().collect()
+    }
+
+    /// Fetch raw getpeerinfo for a specific host. Returns unfiltered JSON array.
+    pub async fn getpeerinfo_raw(&self, host: &str) -> Result<Value> {
+        let ip = self
+            .hosts
+            .get(host)
+            .ok_or_else(|| anyhow::anyhow!("host '{host}' not in RPC_HOSTS mapping"))?;
+        self.call(*ip, "getpeerinfo").await
     }
 
     /// Pre-fetch all relevant RPC data for an alert, returning formatted context.

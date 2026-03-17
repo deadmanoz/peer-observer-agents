@@ -10,6 +10,7 @@ mod log_file;
 mod log_schema;
 
 pub(crate) use api::api_logs;
+pub(crate) use api::check_auth;
 pub(crate) use html::logs_page;
 pub(crate) use log_file::append_jsonl_log;
 pub(crate) use log_schema::{LogEntry, Telemetry};

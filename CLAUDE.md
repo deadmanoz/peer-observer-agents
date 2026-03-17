@@ -54,8 +54,17 @@ nix build                      # Build via flake (Linux/CI)
 - `html.rs` — `/logs` HTML page handler
 
 ### RPC client (`src/rpc/`)
-- `mod.rs` — `RpcClient`, `rpc_methods_for_alert`, JSON-RPC DTOs
+- `mod.rs` — `RpcClient`, `rpc_methods_for_alert`, `host_names()`, `getpeerinfo_raw()`, JSON-RPC DTOs
 - `filter.rs` — `filter_rpc_response`, `filter_peer_info`, per-alert field allowlists
+
+### Peer profiles (`src/profiles/`)
+- `mod.rs` — Re-exports, `ProfileDb`
+- `db.rs` — `ProfileDb::open()`, schema DDL, write ops (upsert/insert/presence windows/pruning), read ops (list/detail/stats)
+- `models.rs` — `Peer`, `Observation`, `SoftwareChange`, `PresenceWindow`, `PeerSummary`, `PeerProfile`, `ProfileStats`
+- `identity.rs` — `bare_address()`, `classify_network()`, `Network` enum, `PeerIdentity`
+- `poller.rs` — Background `tokio::spawn` task polling `getpeerinfo` per host, upserting peers/observations/software changes, presence window tracking, retention pruning
+- `api.rs` — `/api/peers`, `/api/peers/{id}`, `/api/peers/stats` handlers, `/peers` HTML page handler
+- `viewer.html` — Self-contained HTML/CSS/JS peer profiles viewer (embedded via `include_str!`). Peer list with filters, detail view with software timeline and presence windows. XSS-safe (`textContent` only).
 
 ### Other files
 - `src/viewer.html` — Self-contained HTML/CSS/JS log viewer (embedded via `include_str!`). Renders annotation history with verdict badges, expandable rows, filters, client-side search. All user content rendered via `textContent` (no `innerHTML`) for XSS safety.
@@ -84,6 +93,7 @@ When doing a docs update sweep, review all docs against the current source code.
 - `tracing` / `tracing-subscriber` — Structured logging with telemetry fields and env-filter
 - `libc` — Process group management (`setsid`/`killpg`) for subprocess cleanup on timeout
 - `futures-util` — Concurrent RPC fan-out (`join_all`)
+- `rusqlite` — SQLite database for peer profiles (bundled `libsqlite3`)
 
 ## Configuration
 
@@ -97,12 +107,18 @@ Optional viewer: `ANNOTATION_AGENT_VIEWER_AUTH_TOKEN` (Bearer token for `/logs` 
 
 Optional RPC pre-fetch: `ANNOTATION_AGENT_RPC_HOSTS` (JSON host→IP map), `ANNOTATION_AGENT_RPC_PASSWORD` (required if RPC_HOSTS set), `ANNOTATION_AGENT_RPC_USER` (default `rpc-extractor`), `ANNOTATION_AGENT_RPC_PORT` (default 9000)
 
+Optional peer profiles: `ANNOTATION_AGENT_PROFILES_DB` (SQLite file path; unset = profiles disabled), `ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS` (default 300), `ANNOTATION_AGENT_PROFILES_RETENTION_DAYS` (default 90). Activation: `PROFILES_DB` + `RPC_HOSTS` → poller runs; `PROFILES_DB` + `VIEWER_AUTH_TOKEN` → `/peers` and `/api/peers/*` routes registered; `PROFILES_DB` without `RPC_HOSTS` → DB opened but idle (warning logged)
+
 ## Endpoints
 
 - `POST /webhook` — Alertmanager webhook receiver (concurrent per-alert investigation; returns 200/500)
 - `GET /healthz` — Health check (returns 200 OK)
 - `GET /logs` — Annotation log viewer HTML page (only registered when both `LOG_FILE` and `VIEWER_AUTH_TOKEN` are set)
 - `GET /api/logs` — JSONL API for log entries with server-side filtering and cursor pagination (requires `Authorization: Bearer` token)
+- `GET /peers` — Peer profiles viewer HTML page (only registered when both `PROFILES_DB` and `VIEWER_AUTH_TOKEN` are set)
+- `GET /api/peers` — Peer summaries JSON API with network/host filters and pagination (requires Bearer token)
+- `GET /api/peers/{id}` — Full peer profile by peer_id (requires Bearer token)
+- `GET /api/peers/stats` — Aggregate stats: total peers, per-network counts, observation count, host statuses with staleness (requires Bearer token)
 
 ## Log Correlation
 
@@ -130,4 +146,9 @@ This crate can be added as a flake input to [infra-library](https://github.com/p
 - **Model**: Defaults to `claude-sonnet-4-6` for fast, cost-effective investigations. Configurable via `ANNOTATION_AGENT_CLAUDE_MODEL`.
 - **Structured annotation output**: Claude outputs a JSON object with `verdict`, `action`, `summary`, `cause`, `scope`, and `evidence` fields. Rust validates the schema (enum verdict, non-empty fields, verdict-action consistency) and renders HTML for Grafana tooltips. Graceful fallback: if parsing fails, raw text is posted as-is. The verdict (`benign`/`investigate`/`action_required`) is added as a Grafana tag for dashboard filtering but is NOT part of the idempotency key to prevent duplicate annotations during retries.
 - **Grafana HTML annotations**: Annotation tooltips render HTML via DOMPurify sanitization (verified against grafana/grafana AnnotationTooltip2.tsx, 2026-03). Only safe tags used: `<b>`, `<br>`, `&bull;`. Prior annotations have HTML stripped before injection into new investigation prompts.
+- **Peer profiles in SQLite**: Uses `rusqlite` with bundled `libsqlite3` and WAL mode. Single `Arc<Mutex<Connection>>` accessed via `spawn_blocking` — acceptable for v1 since the poller writes every 5 minutes and API reads are lightweight. `PRAGMA auto_vacuum = INCREMENTAL` for space reclamation after retention deletes. Schema versioned via `PRAGMA user_version`.
+- **Presence windows vs sessions**: Tracks identity-level presence (bare IP observed on host), not connection-level sessions. A single peer with both inbound and outbound connections produces one presence window. This is honest about what 5-minute polling can actually tell us.
+- **Peer identity keying**: Clearnet peers keyed on `(bare_ip, network)`. Tor/I2P keyed on `(full_address, network)`, accepting fragmentation across address rotations for v1.
+- **Software change detection**: Only inserts `software_history` rows when subversion/version/services actually change, avoiding duplicating rarely-changing data across ~72K observation rows/day.
+- **Stale host detection**: Host freshness computed at read time (`stale` when `now - last_polled_at > 2 × poll_interval`). Stale window recovery runs at poll time using the poll timestamp (not wall clock) as reference.
 - **Cooldown suppression**: Uses `(alertname, host, threadname)` as the coalescing key, intentionally ignoring `startsAt`. Within the cooldown window, all retriggers for the same alert type on the same host (and thread, for thread-aware alerts) are treated as the same incident. For alerts without a `threadname` label, the field defaults to empty string and doesn't change behavior. Failed investigations or Grafana post failures clear the cooldown state so Alertmanager retries are not suppressed. State is in-process only (does not survive restarts).
