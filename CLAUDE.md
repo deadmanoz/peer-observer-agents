@@ -34,7 +34,7 @@ nix build                      # Build via flake (Linux/CI)
 | `src/viewer/` | `/logs` and `/api/logs` — annotation log viewer |
 | `src/rpc/` | Bitcoin Core RPC client and response filtering |
 | `src/profiles/` | Peer profiles: SQLite DB, poller, `/peers` API and viewer |
-| `src/annotation.rs` | Structured annotation types, HTML rendering |
+| `src/annotation.rs` | Structured annotation types, HTML rendering, peer-intervention policy guard |
 | `src/grafana.rs` | Grafana annotation API |
 | `src/investigation.rs` | Claude CLI subprocess management |
 | `src/cooldown.rs` | Cooldown suppression |

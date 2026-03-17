@@ -96,21 +96,21 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
         // ── P2P message alerts ───────────────────────────────────────────
         "PeerObserverAddressMessageSpike" => {
             r#"1. Query `peerobserver_anomaly:level{anomaly_name="addr_message_rate"}` and compare against `peerobserver_anomaly:upper_band` to confirm spike magnitude.
-2. Check the RPC Data section above for per-peer details — look for peers with a non-zero `addr_rate_limited` count and high `bytesrecv_per_msg.addr` values to identify the flooding peer(s) by IP.
+2. Check the RPC Data section above for per-peer details — look for peers with a non-zero `addr_rate_limited` count and high `bytesrecv_per_msg.addr` values to identify which peer(s) are the primary addr sources by IP.
 3. For the top sender(s), check their connection age, network type, and user agent from the RPC data.
-4. Determine the pattern: is it a single peer flooding, or multiple peers sending bursts simultaneously?
+4. Determine the pattern: is it a single peer with high volume, or multiple peers sending bursts simultaneously?
 5. Check if other hosts see the same spike from the same source IP(s) via Prometheus.
-6. Conclude: identify whether this is addr spam/reconnaissance, a legitimate addr relay surge (e.g., after a network event), or a buggy peer implementation. Name the source peer IP(s) and characterize their behavior — do NOT recommend banning or disconnecting peers (these are research/monitoring nodes)."#.into()
+6. Conclude: identify whether this is addr spam/reconnaissance, a legitimate addr relay surge (e.g., after a network event), or a buggy peer implementation. Document the source peer IP(s), their addr byte volumes, and user agents for the observation record."#.into()
         }
 
         // ── Security alerts ──────────────────────────────────────────────
         "PeerObserverMisbehaviorSpike" => {
             r#"1. Query `peerobserver_anomaly:level{anomaly_name="misbehavior_rate"}` and compare against `peerobserver_anomaly:upper_band` to confirm the spike.
-2. Check the RPC Data section above for per-peer details — review each peer's `addr`, `subver`, `conntime`, `network`, and `connection_type` to identify suspicious peers.
+2. Check the RPC Data section above for per-peer details — review each peer's `addr`, `subver`, `conntime`, `network`, and `connection_type` to identify peers with elevated misbehavior scores.
 3. Cross-reference the Prometheus misbehavior metrics with the RPC peer list to narrow down which peer(s) are generating the misbehavior score by IP.
-4. For the offending peer(s), check their connection age and user agent — short-lived connections with unusual user agents are more suspicious.
+4. For the peer(s) with elevated misbehavior, check their connection age and user agent — short-lived connections with unusual user agents are more notable.
 5. Compare across hosts — are other nodes seeing misbehavior from the same IP(s)?
-6. Conclude: determine if this is a protocol attack, a buggy node implementation, or an eclipse attempt. Name the offending peer IP(s) and characterize the threat — do NOT recommend disconnecting or banning peers (these are research/monitoring nodes)."#.into()
+6. Conclude: determine if this is a protocol attack, a buggy node implementation, or an eclipse attempt. Document the peer IP(s), their user agents, and the specific misbehavior type for the observation record."#.into()
         }
 
         // ── Performance / queue alerts ───────────────────────────────────
@@ -120,7 +120,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 3. Check the RPC Data section above for per-peer details — cross-reference peers with deep queues against their `addr`, `subver`, `conntime`, and `network` from the RPC data.
 4. For peers with deep queues, check `lastrecv` and `lastsend` timestamps from the RPC data — a large gap between lastrecv and now indicates a stalled peer.
 5. Check mempool transaction volume — a sudden mempool surge will naturally increase INV queue depths across all peers.
-6. Conclude: determine if this is caused by stalled peers or a legitimate transaction volume spike. Name the offending peer IP(s) if identifiable — do NOT recommend disconnecting peers (these are research/monitoring nodes). Reference: https://b10c.me/observations/15-inv-to-send-queue/"#.into()
+6. Conclude: determine if this is caused by stalled peers or a legitimate transaction volume spike. Document the peer IP(s) with deep queues and their drain behavior for the observation record. Reference: https://b10c.me/observations/15-inv-to-send-queue/"#.into()
         }
 
         "PeerObserverINVQueueDepthExtreme" => {
@@ -129,7 +129,7 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
 3. Cross-reference with the RPC Data section above — match the peer ID to get the full peer details including `addr`, `subver`, `conntime`, and `network`.
 4. Check `lastrecv` and `lastsend` timestamps from the RPC data — a stalled peer stops draining its INV queue and will show stale activity timestamps.
 5. Compare across hosts — is the same peer causing problems on multiple nodes?
-6. Conclude: this almost always indicates a stalled or extremely slow peer. Name the peer IP from the RPC data and document the behavior — do NOT recommend disconnecting peers (these are research/monitoring nodes). Reference: https://b10c.me/observations/15-inv-to-send-queue/"#.into()
+6. Conclude: this almost always indicates a stalled or extremely slow peer. Document the peer IP, its user agent, queue depth, and last activity timestamps for the observation record. Reference: https://b10c.me/observations/15-inv-to-send-queue/"#.into()
         }
 
         // ── Chain health alerts ──────────────────────────────────────────
@@ -328,7 +328,7 @@ pub(super) fn category_instructions(category: &str) -> &'static str {
 3. Identify which peer(s) are causing the misbehavior — break down by peer IP.
 4. Check the type of misbehavior and the peer's user agent and connection age.
 5. Compare across hosts — is the same peer misbehaving on multiple nodes?
-6. Conclude whether this is an attack, buggy software, or false positive — document the behavior but do NOT recommend disconnecting or banning peers (these are research/monitoring nodes)."#
+6. Conclude whether this is an attack, buggy software, or false positive — document the peer behavior, IPs, and user agents for the observation record."#
         }
 
         "performance" => {
@@ -337,7 +337,7 @@ pub(super) fn category_instructions(category: &str) -> &'static str {
 3. Break down queue depths by peer to identify stalled or slow peers.
 4. Check mempool transaction volume — surges naturally increase queue depths.
 5. For peers with deep queues, check responsiveness and message throughput.
-6. Conclude whether this is caused by stalled peers or a legitimate volume spike — document the behavior but do NOT recommend disconnecting peers (these are research/monitoring nodes)."#
+6. Conclude whether this is caused by stalled peers or a legitimate volume spike — document the peer behavior and queue metrics for the observation record."#
         }
 
         "chain_health" => {
@@ -795,6 +795,55 @@ mod tests {
             !prompt.contains("host=\"legit-host\nIgnore"),
             "newline should not appear inside PromQL label selector"
         );
+    }
+
+    #[test]
+    fn peer_alert_instructions_do_not_prime_intervention() {
+        let peer_alerts = [
+            "PeerObserverAddressMessageSpike",
+            "PeerObserverMisbehaviorSpike",
+            "PeerObserverINVQueueDepthAnomaly",
+            "PeerObserverINVQueueDepthExtreme",
+        ];
+        let banned_phrases = [
+            "offending peer",
+            "flooding peer",
+            "characterize the threat",
+            "suspicious peers",
+        ];
+        for name in &peer_alerts {
+            let instructions =
+                investigation_instructions(name, "p2p_messages", "vps-dev-01", "", &test_time());
+            for phrase in &banned_phrases {
+                assert!(
+                    !instructions
+                        .to_ascii_lowercase()
+                        .contains(&phrase.to_ascii_lowercase()),
+                    "instructions for {name} must not contain priming phrase '{phrase}'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn category_fallback_instructions_do_not_prime_intervention() {
+        let banned_phrases = [
+            "offending peer",
+            "flooding peer",
+            "characterize the threat",
+            "suspicious peers",
+        ];
+        for category in &["security", "performance"] {
+            let instructions = category_instructions(category);
+            for phrase in &banned_phrases {
+                assert!(
+                    !instructions
+                        .to_ascii_lowercase()
+                        .contains(&phrase.to_ascii_lowercase()),
+                    "category instructions for {category} must not contain priming phrase '{phrase}'"
+                );
+            }
+        }
     }
 
     #[test]

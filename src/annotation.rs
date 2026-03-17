@@ -42,7 +42,8 @@ impl fmt::Display for Verdict {
 pub(crate) struct StructuredAnnotation {
     pub(crate) verdict: Verdict,
     /// Specific operator action. Required for `action_required`, optional for
-    /// `investigate` (e.g., "monitor for 15 minutes"), must be absent for `benign`.
+    /// `investigate` (e.g., "operator should review getpeerinfo for peers with elevated addr volumes"),
+    /// must be absent for `benign`.
     #[serde(default)]
     pub(crate) action: Option<String>,
     /// 1-2 sentence TL;DR with key metric values.
@@ -107,6 +108,25 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
             ensure!(
                 !action.trim().is_empty() && !action.trim().eq_ignore_ascii_case("none"),
                 "action_required verdict must have a non-empty, non-'none' action"
+            );
+        }
+    }
+
+    // Policy: reject annotations containing peer-intervention commands in any text field.
+    let all_text_fields = [
+        ann.action.as_deref().unwrap_or(""),
+        &ann.summary,
+        &ann.cause,
+        &ann.scope,
+    ]
+    .into_iter()
+    .chain(ann.evidence.iter().map(|e| e.as_str()));
+
+    for field_text in all_text_fields {
+        if let Some(pattern) = contains_peer_intervention(field_text) {
+            anyhow::bail!(
+                "annotation contains peer-intervention command ({pattern}); \
+                 these are research/monitoring nodes — peer intervention is not permitted"
             );
         }
     }
@@ -187,6 +207,67 @@ fn find_balanced_object(s: &str, start: usize) -> Option<&str> {
         }
     }
     None
+}
+
+/// Peer-intervention command patterns that must not appear in annotations.
+/// Scoped to peer-level intervention only — node-level remediation like
+/// `setnetworkactive`, `systemctl restart`, etc. is intentionally allowed.
+const PEER_INTERVENTION_PATTERNS: &[&str] = &[
+    // Command-form patterns
+    "disconnectnode",
+    "setban",
+    // Natural-language patterns (curated, kept minimal to avoid false positives)
+    "disconnect the peer",
+    "disconnect that peer",
+    "disconnect this peer",
+    "disconnect peer",
+    "disconnect peers",
+    "disconnect and ban",
+    "ban the peer",
+    "ban that peer",
+    "ban this peer",
+    "ban peers",
+    "ban these peers",
+];
+
+/// Check whether text contains peer-intervention commands.
+/// Returns `Some(pattern)` if a match is found, `None` if clean.
+pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    PEER_INTERVENTION_PATTERNS
+        .iter()
+        .find(|p| lower.contains(**p))
+        .copied()
+}
+
+/// Result of checking raw fallback text against the peer-intervention policy.
+pub(crate) struct RawFallbackResult {
+    /// HTML body to post to Grafana.
+    pub(crate) grafana_body: String,
+    /// Text to store in the log `raw_text` field (visible in /logs viewer).
+    pub(crate) log_text: String,
+    /// Whether the policy was violated.
+    pub(crate) policy_violated: bool,
+}
+
+/// Check raw fallback text against the peer-intervention policy and produce
+/// safe content for both Grafana and the log viewer.
+pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
+    if contains_peer_intervention(raw).is_some() {
+        let stub = "Investigation output contained a prohibited peer-intervention \
+                     command. Original text redacted.";
+        RawFallbackResult {
+            grafana_body: format!("<b>POLICY VIOLATION:</b> {stub}"),
+            log_text: stub.to_string(),
+            policy_violated: true,
+        }
+    } else {
+        RawFallbackResult {
+            grafana_body: html_escape(raw),
+            log_text: raw.to_string(),
+            policy_violated: false,
+        }
+    }
 }
 
 /// Escape text for safe inclusion in HTML annotation content.
@@ -336,7 +417,7 @@ mod tests {
     fn investigate_json() -> &'static str {
         r#"{
             "verdict": "investigate",
-            "action": "monitor for 15 minutes, escalate if rate exceeds 35/s",
+            "action": "operator should review getpeerinfo for peers with elevated addr byte volumes and document findings",
             "summary": "Second consecutive addr spike within 14 minutes on vps-prod-01.",
             "cause": "Periodic addr relay re-broadcast cycle across inbound peer set.",
             "scope": "multi-host (vps-prod-01 and vps-dev-01 simultaneously)",
@@ -368,7 +449,7 @@ mod tests {
     fn parse_investigate_annotation() {
         let ann = parse_structured_annotation(investigate_json()).unwrap();
         assert_eq!(ann.verdict, Verdict::Investigate);
-        assert!(ann.action.as_ref().unwrap().contains("monitor"));
+        assert!(ann.action.as_ref().unwrap().contains("getpeerinfo"));
     }
 
     #[test]
@@ -702,5 +783,115 @@ mod tests {
     fn strip_html_passes_through_plain_text() {
         let text = "plain text without any html";
         assert_eq!(strip_annotation_html(text), text);
+    }
+
+    // ── Peer-intervention policy (contains_peer_intervention) ─────────
+
+    #[test]
+    fn peer_intervention_detects_disconnectnode() {
+        assert!(contains_peer_intervention("bitcoin-cli disconnectnode 1.2.3.4").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_detects_setban() {
+        assert!(contains_peer_intervention("bitcoin-cli setban 1.2.3.4 add 86400").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_case_insensitive() {
+        assert!(contains_peer_intervention("DISCONNECTNODE").is_some());
+        assert!(contains_peer_intervention("SetBan").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_detects_natural_language() {
+        assert!(contains_peer_intervention("disconnect the peer at 1.2.3.4").is_some());
+        assert!(contains_peer_intervention("ban the peer for 24 hours").is_some());
+        assert!(contains_peer_intervention("disconnect and ban 1.2.3.4").is_some());
+        assert!(contains_peer_intervention("disconnect peers with high misbehavior").is_some());
+        assert!(contains_peer_intervention("ban these peers for 24 hours").is_some());
+        assert!(contains_peer_intervention("ban peers sending spam").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_allows_node_commands() {
+        assert!(contains_peer_intervention("systemctl restart bitcoind").is_none());
+        assert!(contains_peer_intervention("setnetworkactive true").is_none());
+        assert!(contains_peer_intervention("getpeerinfo").is_none());
+    }
+
+    #[test]
+    fn peer_intervention_no_false_positives() {
+        // "disconnected" in prose (past tense observation) should not trigger
+        assert!(contains_peer_intervention("peer disconnected at 12:00 UTC").is_none());
+        // "banned" in prose should not trigger
+        assert!(contains_peer_intervention("peer was previously banned").is_none());
+        // "bandwidth" should not trigger
+        assert!(contains_peer_intervention("high bandwidth usage").is_none());
+    }
+
+    // ── Peer-intervention policy (structured path) ────────────────────
+
+    #[test]
+    fn validate_rejects_action_with_disconnectnode() {
+        let json = r#"{"verdict":"action_required","action":"run bitcoin-cli disconnectnode 1.2.3.4:8333",
+            "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        let err = parse_structured_annotation(json).unwrap_err();
+        assert!(err.to_string().contains("peer-intervention"));
+    }
+
+    #[test]
+    fn validate_rejects_setban_in_summary() {
+        let json = r#"{"verdict":"investigate","action":"check logs",
+            "summary":"consider running setban on 1.2.3.4","cause":"test","scope":"test",
+            "evidence":["a","b"]}"#;
+        let err = parse_structured_annotation(json).unwrap_err();
+        assert!(err.to_string().contains("peer-intervention"));
+    }
+
+    #[test]
+    fn validate_rejects_disconnectnode_in_evidence() {
+        let json = r#"{"verdict":"investigate",
+            "summary":"test","cause":"test","scope":"test",
+            "evidence":["run disconnectnode to fix","metric b"]}"#;
+        let err = parse_structured_annotation(json).unwrap_err();
+        assert!(err.to_string().contains("peer-intervention"));
+    }
+
+    #[test]
+    fn validate_allows_node_level_actions() {
+        let json = r#"{"verdict":"action_required","action":"systemctl restart bitcoind on bitcoin-01",
+            "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        assert!(parse_structured_annotation(json).is_ok());
+    }
+
+    #[test]
+    fn validate_allows_setnetworkactive() {
+        let json = r#"{"verdict":"action_required","action":"bitcoin-cli setnetworkactive true",
+            "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        assert!(parse_structured_annotation(json).is_ok());
+    }
+
+    // ── sanitize_raw_fallback ─────────────────────────────────────────
+
+    #[test]
+    fn raw_fallback_redacts_prohibited_text() {
+        let result = sanitize_raw_fallback(
+            "You should run bitcoin-cli disconnectnode 1.2.3.4:8333 to fix this.",
+        );
+        assert!(result.policy_violated);
+        assert!(result.grafana_body.contains("POLICY VIOLATION"));
+        assert!(!result.grafana_body.contains("disconnectnode"));
+        assert!(!result.log_text.contains("disconnectnode"));
+        assert!(result.log_text.contains("redacted"));
+    }
+
+    #[test]
+    fn raw_fallback_passes_clean_text() {
+        let raw = "The addr rate peaked at 25/s, check getpeerinfo for details.";
+        let result = sanitize_raw_fallback(raw);
+        assert!(!result.policy_violated);
+        assert_eq!(result.log_text, raw);
+        assert!(result.grafana_body.contains("addr rate peaked"));
     }
 }

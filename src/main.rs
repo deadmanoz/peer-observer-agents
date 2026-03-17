@@ -10,7 +10,9 @@ mod state;
 mod types;
 mod viewer;
 
-use crate::annotation::{html_escape, parse_structured_annotation, render_annotation_html};
+use crate::annotation::{
+    parse_structured_annotation, render_annotation_html, sanitize_raw_fallback,
+};
 use crate::cooldown::{try_claim_cooldown, CooldownKey, SuppressReason, DEFAULT_COOLDOWN_SECS};
 use crate::correlation::AlertId;
 use crate::grafana::post_grafana_annotation;
@@ -337,14 +339,22 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
                 error = %e,
                 "failed to parse structured annotation, using raw text"
             );
-            let escaped = html_escape(&claude_output.result);
-            post_grafana_annotation(state, alert, aid, &escaped, None).await?;
+            let fallback = sanitize_raw_fallback(&claude_output.result);
+            if fallback.policy_violated {
+                // Log full original text to tracing only — NOT persisted in viewer log.
+                warn!(
+                    alert_id = %aid,
+                    raw_text = %claude_output.result,
+                    "raw annotation redacted: peer-intervention command detected"
+                );
+            }
+            post_grafana_annotation(state, alert, aid, &fallback.grafana_body, None).await?;
             append_log(
                 state,
                 alert,
                 aid,
                 None,
-                Some(&claude_output.result),
+                Some(&fallback.log_text),
                 &telemetry,
             )
             .await;
