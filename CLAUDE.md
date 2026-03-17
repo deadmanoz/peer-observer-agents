@@ -28,12 +28,37 @@ nix build                      # Build via flake (Linux/CI)
 
 ## Project Structure
 
-- `src/main.rs` — HTTP server, webhook handler, Claude CLI invocation, Grafana annotation posting, idempotency, telemetry
+### Core modules
+- `src/main.rs` — HTTP server startup, webhook handler, `process_alert` orchestrator, `append_log` glue
+- `src/types.rs` — Shared DTOs: `ClaudeOutput`, `AlertmanagerPayload`, `Alert`
+- `src/state.rs` — `AppState` struct (HTTP client, semaphore, cooldown map, config)
+- `src/cooldown.rs` — Cooldown suppression: `CooldownState`, `CooldownGuard`, `try_claim_cooldown`
+- `src/correlation.rs` — `AlertId` (stable log correlation), `build_idempotency_tags`, `build_annotation_tags`
+- `src/grafana.rs` — All Grafana API: `post_grafana_annotation`, `annotation_exists`, `fetch_recent_annotations`, `format_prior_context`
+- `src/investigation.rs` — Claude CLI subprocess: `call_claude`, `parse_claude_output`
 - `src/annotation.rs` — Structured annotation types (Verdict, StructuredAnnotation), JSON parsing/validation, HTML rendering, HTML stripping
-- `src/viewer.rs` — JSONL log entry types (LogEntry, Telemetry, EntryKind), log file writer, `/api/logs` API handler with cursor pagination and server-side filters, `/logs` HTML viewer page
+
+### Prompt generation (`src/prompt/`)
+- `mod.rs` — `build_investigation_prompt` orchestrator, re-exports `AlertContext`, `sanitize`, `strip_control_chars`
+- `alert_context.rs` — `AlertContext` struct and `from_alert` constructor
+- `sanitization.rs` — `sanitize`, `strip_control_chars`, `sanitize_promql_label`, `sanitize_host_for_prompt`
+- `fast_path.rs` — `BandDirection`, `FastPathSpec`, anomaly-band fast-path classification
+- `instructions.rs` — Per-alert and per-category investigation instructions with PromQL templates
+
+### Log viewer (`src/viewer/`)
+- `mod.rs` — Re-exports
+- `log_schema.rs` — `EntryKind`, `Telemetry`, `LogEntry` JSONL types
+- `log_file.rs` — `append_jsonl_log` async file writer
+- `cursor.rs` — Cursor pagination (base64 encode/decode, `HeapEntry` for bounded top-N)
+- `api.rs` — `/api/logs` handler with server-side filters and cursor pagination
+- `html.rs` — `/logs` HTML page handler
+
+### RPC client (`src/rpc/`)
+- `mod.rs` — `RpcClient`, `rpc_methods_for_alert`, JSON-RPC DTOs
+- `filter.rs` — `filter_rpc_response`, `filter_peer_info`, per-alert field allowlists
+
+### Other files
 - `src/viewer.html` — Self-contained HTML/CSS/JS log viewer (embedded via `include_str!`). Renders annotation history with verdict badges, expandable rows, filters, client-side search. All user content rendered via `textContent` (no `innerHTML`) for XSS safety.
-- `src/prompt.rs` — Alert context extraction and investigation prompt generation (per-alert and per-category instructions, including `PeerObserverThreadSaturation` for per-thread CPU saturation)
-- `src/rpc.rs` — Bitcoin Core JSON-RPC client for pre-fetching node data (getpeerinfo, getblockchaininfo, etc.) over WireGuard
 - `Cargo.toml` — Dependencies
 - `flake.nix` — Nix build definition with checks (package, fmt, clippy, test)
 - `.github/workflows/ci.yml` — CI: fmt, clippy, test, nix build

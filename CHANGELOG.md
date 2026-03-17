@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Modularize codebase: split monolithic `main.rs` (1745 lines), `prompt.rs` (1579 lines), `viewer.rs` (1630 lines), and `rpc.rs` (853 lines) into focused modules — no file exceeds 970 lines, most are under 400. Shared DTOs in `types.rs`, `AppState` in `state.rs`, Grafana concerns in `grafana.rs`, Claude subprocess in `investigation.rs`, cooldown in `cooldown.rs`, correlation in `correlation.rs`. Prompt, viewer, and RPC split into directory modules with clear submodule boundaries.
+
 ### Fixed
 
 - Fix log viewer filters crashing with `TypeError: Cannot set properties of null` — the `#status` element was destroyed by `renderTable()` via `innerHTML = ''`, causing subsequent `loadLogs()` calls to fail silently before the fetch even ran
