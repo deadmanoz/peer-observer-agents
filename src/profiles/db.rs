@@ -506,23 +506,38 @@ impl ProfileDb {
     }
 
     /// Delete orphaned peers whose last_seen is older than the cutoff and who have
-    /// no remaining observations, presence windows, or software history.
-    /// Returns the total number of rows deleted.
+    /// no remaining observations or presence windows. Also cleans up any remaining
+    /// software_history anchor rows for those peers (which `prune_software_history`
+    /// deliberately preserves). Uses `prune_loop` for mutex-friendly batching.
     pub async fn prune_orphaned_peers(&self, cutoff: &str) -> Result<usize> {
-        let conn = Arc::clone(&self.conn);
-        let cutoff = cutoff.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let deleted = conn.execute(
-                "DELETE FROM peers WHERE last_seen < ?1
-                 AND NOT EXISTS (SELECT 1 FROM observations WHERE observations.peer_id = peers.peer_id)
-                 AND NOT EXISTS (SELECT 1 FROM presence_windows WHERE presence_windows.peer_id = peers.peer_id)
-                 AND NOT EXISTS (SELECT 1 FROM software_history WHERE software_history.peer_id = peers.peer_id)",
-                params![cutoff],
-            )?;
-            Ok(deleted)
-        })
-        .await?
+        // First, delete software_history rows for peers that are candidates for
+        // orphan deletion (no observations, no presence windows, last_seen expired).
+        // This removes the anchor rows that prune_software_history preserves.
+        self.prune_loop(
+            "DELETE FROM software_history WHERE history_id IN (
+                SELECT sh.history_id FROM software_history sh
+                INNER JOIN peers p ON p.peer_id = sh.peer_id
+                WHERE p.last_seen < ?1
+                AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.peer_id = p.peer_id)
+                AND NOT EXISTS (SELECT 1 FROM presence_windows pw WHERE pw.peer_id = p.peer_id)
+                LIMIT 10000
+            )",
+            cutoff,
+        )
+        .await?;
+
+        // Now delete the orphaned peer rows themselves.
+        self.prune_loop(
+            "DELETE FROM peers WHERE peer_id IN (
+                SELECT peer_id FROM peers WHERE last_seen < ?1
+                AND NOT EXISTS (SELECT 1 FROM observations WHERE observations.peer_id = peers.peer_id)
+                AND NOT EXISTS (SELECT 1 FROM presence_windows WHERE presence_windows.peer_id = peers.peer_id)
+                AND NOT EXISTS (SELECT 1 FROM software_history WHERE software_history.peer_id = peers.peer_id)
+                LIMIT 10000
+            )",
+            cutoff,
+        )
+        .await
     }
 
     /// Run `PRAGMA incremental_vacuum` to reclaim space after large deletes.
