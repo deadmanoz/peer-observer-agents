@@ -332,6 +332,7 @@ pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let normalized: String = text
         .chars()
         .filter(|c| !ZERO_WIDTH_CHARS.contains(c))
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect::<String>()
         .to_ascii_lowercase();
     PEER_INTERVENTION_PATTERNS
@@ -422,30 +423,33 @@ pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
 /// the fragility of JSON-wrapping the string for decoding.
 fn decode_unicode_escapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if chars.peek() == Some(&'u') {
-                chars.next(); // consume 'u'
-                let hex: String = chars.by_ref().take(4).collect();
-                if hex.len() == 4 {
-                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                        if let Some(decoded) = char::from_u32(code) {
-                            out.push(decoded);
-                            continue;
-                        }
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for \u followed by exactly 4 hex digits
+        if bytes[i] == b'\\' && i + 5 < bytes.len() && bytes[i + 1] == b'u' {
+            let hex = &s[i + 2..i + 6];
+            if hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                if let Ok(code) = u32::from_str_radix(hex, 16) {
+                    if let Some(decoded) = char::from_u32(code) {
+                        out.push(decoded);
+                        i += 6;
+                        continue;
                     }
                 }
-                // Not a valid \uXXXX (e.g. surrogate) — emit a space
-                // placeholder so the hex digits don't act as word-boundary
-                // characters that defeat the pattern matcher.
+                // Valid hex but invalid codepoint (surrogate) — emit space
+                // placeholder so hex digits don't defeat word-boundary checks.
                 out.push(' ');
-            } else {
-                out.push(c);
+                i += 6;
+                continue;
             }
-        } else {
-            out.push(c);
         }
+        // Not a \uXXXX sequence — emit the character unchanged.
+        // Safety: we only index bytes for ASCII checks above; for output we
+        // iterate chars to handle multi-byte UTF-8 correctly.
+        let c = s[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
     }
     out
 }
