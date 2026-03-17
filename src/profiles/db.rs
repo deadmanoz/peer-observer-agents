@@ -463,6 +463,29 @@ impl ProfileDb {
         .await?
     }
 
+    /// Delete closed presence windows older than the given ISO 8601 cutoff, in batches.
+    /// Returns the total number of rows deleted.
+    pub async fn prune_closed_presence_windows(&self, cutoff: &str) -> Result<usize> {
+        let conn = Arc::clone(&self.conn);
+        let cutoff = cutoff.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut total_deleted = 0usize;
+            loop {
+                let deleted = conn.execute(
+                    "DELETE FROM presence_windows WHERE window_id IN (SELECT window_id FROM presence_windows WHERE closed = 1 AND last_observed < ?1 LIMIT 10000)",
+                    params![cutoff],
+                )?;
+                total_deleted += deleted;
+                if deleted < 10000 {
+                    break;
+                }
+            }
+            Ok(total_deleted)
+        })
+        .await?
+    }
+
     /// Run `PRAGMA incremental_vacuum` to reclaim space after large deletes.
     pub async fn incremental_vacuum(&self) -> Result<()> {
         let conn = Arc::clone(&self.conn);
@@ -542,17 +565,32 @@ impl ProfileDb {
                 .filter_map(|r| r.ok())
                 .collect();
 
-            // For each peer, get active hosts
+            // Batch-fetch active hosts for all returned peers in a single query
+            // to avoid N+1 while holding the mutex.
+            let peer_ids: Vec<i64> = peers.iter().map(|(id, ..)| *id).collect();
+            let mut hosts_map: std::collections::HashMap<i64, Vec<String>> =
+                std::collections::HashMap::new();
+
+            if !peer_ids.is_empty() {
+                let placeholders: String = peer_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let hosts_sql = format!(
+                    "SELECT DISTINCT peer_id, host FROM presence_windows WHERE peer_id IN ({placeholders}) AND closed = 0"
+                );
+                let mut host_stmt = conn.prepare(&hosts_sql)?;
+                let host_params: Vec<&dyn rusqlite::types::ToSql> =
+                    peer_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+                let rows = host_stmt
+                    .query_map(host_params.as_slice(), |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .filter_map(|r| r.ok());
+                for (pid, host) in rows {
+                    hosts_map.entry(pid).or_default().push(host);
+                }
+            }
+
             let mut result = Vec::with_capacity(peers.len());
             for (peer_id, address, net, first_seen, last_seen, latest_sub, obs_count) in peers {
-                let mut host_stmt = conn.prepare(
-                    "SELECT DISTINCT host FROM presence_windows WHERE peer_id = ?1 AND closed = 0",
-                )?;
-                let hosts: Vec<String> = host_stmt
-                    .query_map(params![peer_id], |row| row.get(0))?
-                    .filter_map(|r| r.ok())
-                    .collect();
-
                 result.push(PeerSummary {
                     peer_id,
                     address,
@@ -561,7 +599,7 @@ impl ProfileDb {
                     last_seen,
                     latest_subversion: latest_sub,
                     observation_count: obs_count,
-                    active_on_hosts: hosts,
+                    active_on_hosts: hosts_map.remove(&peer_id).unwrap_or_default(),
                 });
             }
 

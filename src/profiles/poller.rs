@@ -43,7 +43,17 @@ pub fn start_poller(
                     info!(deleted, "pruned old observations");
                 }
                 Err(e) => {
-                    warn!(error = %e, "retention pruning failed");
+                    warn!(error = %e, "observation retention pruning failed");
+                }
+                _ => {}
+            }
+
+            match db.prune_closed_presence_windows(&cutoff_str).await {
+                Ok(deleted) if deleted > 0 => {
+                    info!(deleted, "pruned old closed presence windows");
+                }
+                Err(e) => {
+                    warn!(error = %e, "presence window retention pruning failed");
                 }
                 _ => {}
             }
@@ -84,12 +94,28 @@ async fn poll_host(
 
         let identity = peer_identity(addr, network);
 
+        // Skip peers with unknown network types to avoid identity collisions.
+        if !identity.network.is_known() {
+            continue;
+        }
+
         let subversion = peer["subver"].as_str().unwrap_or("").to_string();
         let version = peer["version"].as_i64().unwrap_or(0);
         let services = peer["servicesnames"]
-            .as_str()
-            .unwrap_or_else(|| peer["services"].as_str().unwrap_or("0x0000000000000000"))
-            .to_string();
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                peer["services"]
+                    .as_str()
+                    .unwrap_or("0x0000000000000000")
+                    .to_string()
+            });
 
         parsed_peers.push(ParsedPeer {
             address: identity.address,

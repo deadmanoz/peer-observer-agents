@@ -10,6 +10,9 @@ pub enum Network {
     Onion,
     I2p,
     Cjdns,
+    /// Unknown network type — not stored in the DB.
+    /// The poller skips peers with unknown networks to avoid identity collisions.
+    Unknown,
 }
 
 impl Network {
@@ -20,7 +23,13 @@ impl Network {
             Network::Onion => "onion",
             Network::I2p => "i2p",
             Network::Cjdns => "cjdns",
+            Network::Unknown => "unknown",
         }
+    }
+
+    /// Returns true if this is a known network type that can be stored in the DB.
+    pub fn is_known(&self) -> bool {
+        !matches!(self, Network::Unknown)
     }
 }
 
@@ -45,8 +54,7 @@ pub fn classify_network(network: &str) -> Network {
         "onion" => Network::Onion,
         "i2p" => Network::I2p,
         "cjdns" => Network::Cjdns,
-        // Default unknown networks to ipv4 — should not happen with Bitcoin Core
-        _ => Network::Ipv4,
+        _ => Network::Unknown,
     }
 }
 
@@ -133,8 +141,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_network_defaults_to_ipv4() {
-        assert_eq!(classify_network("garlic"), Network::Ipv4);
+    fn unknown_network_returns_unknown() {
+        assert_eq!(classify_network("garlic"), Network::Unknown);
+        assert!(!Network::Unknown.is_known());
+        assert!(Network::Ipv4.is_known());
     }
 
     // ── peer_identity ─────────────────────────────────────────────────
