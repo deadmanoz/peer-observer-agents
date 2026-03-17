@@ -441,6 +441,10 @@ impl ProfileDb {
         .await?
     }
 
+    /// Maximum rows deleted per prune batch. Used in both the LIMIT clause
+    /// of each prune SQL and the loop termination check.
+    const PRUNE_BATCH_SIZE: usize = 10_000;
+
     /// Run a single batch delete, acquiring and releasing the mutex once.
     /// The closure receives a locked connection and must return the number of
     /// rows deleted. This pattern avoids passing raw SQL strings through the
@@ -473,7 +477,7 @@ impl ProfileDb {
             let batch_fn = make_batch(cutoff.to_string());
             let deleted = self.prune_batch(batch_fn).await?;
             total_deleted += deleted;
-            if deleted < 10000 {
+            if deleted < Self::PRUNE_BATCH_SIZE {
                 break;
             }
         }
@@ -542,6 +546,11 @@ impl ProfileDb {
     /// no remaining observations or presence windows. Runs atomically in a single
     /// transaction to prevent TOCTOU races with concurrent poll_host: the software
     /// history anchor cleanup and peer deletion see a consistent snapshot.
+    ///
+    /// Note: holds the mutex for the entire transaction. On first deployment after
+    /// a long accumulation period this could block API reads briefly. Acceptable
+    /// because orphan counts are bounded by total unique peers (~hundreds), not
+    /// by observation volume (~millions).
     pub async fn prune_orphaned_peers(&self, cutoff: &str) -> Result<usize> {
         let conn = Arc::clone(&self.conn);
         let cutoff = cutoff.to_string();
