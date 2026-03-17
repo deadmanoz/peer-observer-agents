@@ -120,6 +120,11 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
     Ok(())
 }
 
+/// Discriminating substring in policy-violation error messages, shared between
+/// `check_peer_intervention_policy` (producer) and `main.rs` (consumer) to avoid
+/// fragile string matching against the full error text.
+pub(crate) const POLICY_ERROR_MARKER: &str = "peer-intervention";
+
 /// Check content policy: reject annotations containing peer-intervention commands.
 ///
 /// Separated from `validate_structured_annotation` so that `extract_json_object`
@@ -139,7 +144,7 @@ fn check_peer_intervention_policy(ann: &StructuredAnnotation) -> Result<()> {
     for field_text in all_text_fields {
         if let Some(pattern) = contains_peer_intervention(field_text) {
             anyhow::bail!(
-                "annotation contains peer-intervention command ({pattern}); \
+                "annotation contains {POLICY_ERROR_MARKER} command ({pattern}); \
                  these are research/monitoring nodes — peer intervention is not permitted"
             );
         }
@@ -249,9 +254,9 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
 /// Check whether text contains peer-intervention commands.
 /// Returns `Some(pattern)` if a match is found, `None` if clean.
 ///
-/// Uses word-boundary-aware matching: each pattern must either start at the
-/// beginning of the text or be preceded by a non-alphanumeric character.
-/// This prevents false positives like "urban peer" matching "ban peer".
+/// Uses word-boundary-aware matching: each pattern must have non-alphanumeric
+/// characters (or string boundaries) on both sides. This prevents false positives
+/// like "urban peer" matching "ban peer" or "setbandwidth" matching "setban".
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
     PEER_INTERVENTION_PATTERNS
@@ -260,9 +265,9 @@ pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
         .copied()
 }
 
-/// Check if `pattern` appears in `text` with a word boundary before it.
-/// A word boundary means the character before the match is non-alphanumeric
-/// or the match starts at the beginning of the text.
+/// Check if `pattern` appears in `text` with word boundaries on both sides.
+/// A word boundary means the adjacent character is non-alphanumeric or the
+/// match is at the start/end of the text.
 fn has_word_boundary_match(text: &str, pattern: &str) -> bool {
     let mut idx = 0;
     while let Some(pos) = text[idx..].find(pattern) {
@@ -272,7 +277,12 @@ fn has_word_boundary_match(text: &str, pattern: &str) -> bool {
                 .chars()
                 .next_back()
                 .is_some_and(|c| c.is_alphanumeric());
-        if !preceded_by_word_char {
+        let end = abs + pattern.len();
+        let followed_by_word_char = text[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric());
+        if !preceded_by_word_char && !followed_by_word_char {
             return true;
         }
         idx = abs + 1;
@@ -875,6 +885,10 @@ mod tests {
                 .is_none()
         );
         assert!(contains_peer_intervention("suburban peer group has high latency").is_none());
+        // "setbandwidth" must not trigger "setban" match (trailing boundary)
+        assert!(contains_peer_intervention("setbandwidth 1000").is_none());
+        // "disconnect and bank" must not trigger "disconnect and ban" match
+        assert!(contains_peer_intervention("disconnect and bank transfer").is_none());
     }
 
     // ── Peer-intervention policy (structured path) ────────────────────
