@@ -299,11 +299,19 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
 /// Uses word-boundary-aware matching: each pattern must have non-alphanumeric
 /// characters (or string boundaries) on both sides. This prevents false positives
 /// like "urban peer" matching "ban peer" or "setbandwidth" matching "setban".
+/// Zero-width Unicode characters that could be inserted between letters of
+/// a prohibited command to evade substring matching.
+const ZERO_WIDTH_CHARS: &[char] = &['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'];
+
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
-    let lower = text.to_ascii_lowercase();
+    let normalized: String = text
+        .chars()
+        .filter(|c| !ZERO_WIDTH_CHARS.contains(c))
+        .collect::<String>()
+        .to_ascii_lowercase();
     PEER_INTERVENTION_PATTERNS
         .iter()
-        .find(|p| has_word_boundary_match(&lower, p))
+        .find(|p| has_word_boundary_match(&normalized, p))
         .copied()
 }
 

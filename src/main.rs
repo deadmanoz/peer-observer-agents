@@ -376,6 +376,12 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
                         .expect("matched_pattern must be Some when policy_violated"),
                     "raw annotation redacted: peer-intervention command detected"
                 );
+                // Forensic audit — mirrors the structured PolicyViolation path.
+                warn!(
+                    alert_id = %aid,
+                    raw_output = %claude_output.result,
+                    "original output for policy violation (not posted to Grafana)"
+                );
             }
             post_grafana_annotation(state, alert, aid, &fallback.grafana_body, None).await?;
             append_log(
