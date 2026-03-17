@@ -301,7 +301,19 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
 
 /// Zero-width Unicode characters that could be inserted between letters of
 /// a prohibited command to evade substring matching.
-const ZERO_WIDTH_CHARS: &[char] = &['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'];
+const ZERO_WIDTH_CHARS: &[char] = &[
+    '\u{200B}', // ZERO WIDTH SPACE
+    '\u{200C}', // ZERO WIDTH NON-JOINER
+    '\u{200D}', // ZERO WIDTH JOINER
+    '\u{FEFF}', // BOM / ZERO WIDTH NO-BREAK SPACE
+    '\u{2060}', // WORD JOINER
+    '\u{00AD}', // SOFT HYPHEN
+    '\u{180E}', // MONGOLIAN VOWEL SEPARATOR
+    '\u{2061}', // FUNCTION APPLICATION
+    '\u{2062}', // INVISIBLE TIMES
+    '\u{2063}', // INVISIBLE SEPARATOR
+    '\u{2064}', // INVISIBLE PLUS
+];
 
 /// Check whether text contains peer-intervention commands.
 /// Returns `Some(pattern)` if a match is found, `None` if clean.
@@ -424,10 +436,10 @@ fn decode_unicode_escapes(s: &str) -> String {
                         }
                     }
                 }
-                // Not a valid \uXXXX — emit literally
-                out.push('\\');
-                out.push('u');
-                out.push_str(&hex);
+                // Not a valid \uXXXX (e.g. surrogate) — emit a space
+                // placeholder so the hex digits don't act as word-boundary
+                // characters that defeat the pattern matcher.
+                out.push(' ');
             } else {
                 out.push(c);
             }
@@ -1059,7 +1071,7 @@ mod tests {
 "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
         let err = parse_structured_annotation(wrapped).unwrap_err();
         assert!(
-            err.to_string().contains("peer-intervention"),
+            err.to_string().contains(POLICY_ERROR_MARKER),
             "preamble-wrapped policy violation should surface as peer-intervention error, got: {err}"
         );
     }
