@@ -96,9 +96,9 @@
     <select id="filter-host"><option value="">All hosts</option></select>
     <select id="filter-alertname"><option value="">All alerts</option></select>
     <select id="filter-threadname"><option value="">All threads</option></select>
-    <span class="filter-label" id="label-logged-after">Logged after (local)</span>
+    <span class="filter-label" id="label-logged-after">Logged after (UTC)</span>
     <input type="datetime-local" id="filter-logged-after" step="1">
-    <span class="filter-label" id="label-logged-before">Logged before (local)</span>
+    <span class="filter-label" id="label-logged-before">Logged before (UTC)</span>
     <input type="datetime-local" id="filter-logged-before" step="1">
     <input type="search" id="search-input" placeholder="Search loaded results...">
     <div class="controls">
@@ -605,13 +605,21 @@
     });
   }
 
-  // Timezone toggle — re-render without refetching, update date filter labels
+  // Timezone toggle — update labels, refetch if date filters are active (since the
+  // interpretation of their values changes), otherwise just re-render.
   document.getElementById('tz-toggle').addEventListener('change', function() {
     USE_LOCAL_TZ = this.value === 'local';
     const tzLabel = USE_LOCAL_TZ ? 'local' : 'UTC';
     document.getElementById('label-logged-after').textContent = 'Logged after (' + tzLabel + ')';
     document.getElementById('label-logged-before').textContent = 'Logged before (' + tzLabel + ')';
-    if (ALL_ENTRIES.length > 0) renderTable();
+    const afterVal = document.getElementById('filter-logged-after').value;
+    const beforeVal = document.getElementById('filter-logged-before').value;
+    if (afterVal || beforeVal) {
+      NEXT_CURSOR = null;
+      loadLogs();
+    } else if (ALL_ENTRIES.length > 0) {
+      renderTable();
+    }
   });
 
   // Auto-refresh toggle
