@@ -97,19 +97,20 @@ pub(crate) async fn api_logs(
     };
 
     // Parse date range filters. Reject malformed dates with 400.
+    // Empty strings are treated as absent (same as omitting the parameter).
     let logged_after: Option<DateTime<Utc>> = match &query.logged_after {
-        Some(s) => Some(
+        Some(s) if !s.is_empty() => Some(
             s.parse::<DateTime<Utc>>()
                 .map_err(|_| StatusCode::BAD_REQUEST)?,
         ),
-        None => None,
+        _ => None,
     };
     let logged_before: Option<DateTime<Utc>> = match &query.logged_before {
-        Some(s) => Some(
+        Some(s) if !s.is_empty() => Some(
             s.parse::<DateTime<Utc>>()
                 .map_err(|_| StatusCode::BAD_REQUEST)?,
         ),
-        None => None,
+        _ => None,
     };
 
     // Reject inverted ranges with 400. A zero-width interval [T, T) is valid
@@ -1233,7 +1234,7 @@ mod tests {
             .header("authorization", "Bearer token")
             .body(Body::empty())
             .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let entries = parse_ndjson_body(&body);
@@ -1244,6 +1245,19 @@ mod tests {
             "half-open [01, 02) should include only :01"
         );
         assert_eq!(entries[0].alertname, "Alert1");
+
+        // Zero-width interval [T, T) — should return empty 200, not 400
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-15T20:00:01Z&logged_before=2025-06-15T20:00:01Z")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(entries.len(), 0, "zero-width [T, T) should return empty");
 
         let _ = tokio::fs::remove_file(&log_path).await;
         let _ = tokio::fs::remove_dir(&dir).await;
