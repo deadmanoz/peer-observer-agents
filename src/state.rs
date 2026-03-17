@@ -1,5 +1,7 @@
 use crate::cooldown::CooldownMap;
+use crate::profiles::ProfileDb;
 use crate::rpc;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
@@ -23,10 +25,17 @@ pub(crate) struct AppState {
     pub(crate) cooldown: Duration,
     /// In-process state for cooldown suppression.
     pub(crate) cooldown_map: CooldownMap,
-    /// Bearer token for `/logs` and `/api/logs` viewer endpoints.
+    /// Bearer token for viewer endpoints (`/logs`, `/api/logs`, `/peers`, `/api/peers/*`).
     /// When `None`, viewer routes return 404.
     pub(crate) viewer_auth_token: Option<String>,
     /// Serializes JSONL log writes to prevent interleaved bytes from
     /// concurrent investigations.
     pub(crate) log_write_mutex: tokio::sync::Mutex<()>,
+    /// Optional SQLite peer profiles database.
+    /// `None` when `ANNOTATION_AGENT_PROFILES_DB` is not set.
+    pub(crate) profile_db: Option<Arc<ProfileDb>>,
+    /// Poll interval for peer profiles (default 300s).
+    pub(crate) profiles_poll_interval: Duration,
+    /// Retention for observations in days (default 90).
+    pub(crate) profiles_retention_days: u64,
 }

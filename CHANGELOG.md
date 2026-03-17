@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add peer profiles component: continuously polls `getpeerinfo` from configured Bitcoin Core nodes and builds persistent per-peer profiles in SQLite. Tracks peer identities, connection observations, software version changes, and presence windows across hosts. New `/peers` viewer and `/api/peers/*` API endpoints with bearer auth. Configurable via `ANNOTATION_AGENT_PROFILES_DB`, `ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS`, and `ANNOTATION_AGENT_PROFILES_RETENTION_DAYS`.
+
 ### Changed
 
 - Modularize codebase: split monolithic `main.rs` (1745 lines), `prompt.rs` (1579 lines), `viewer.rs` (1630 lines), and `rpc.rs` (853 lines) into focused modules — no file exceeds 970 lines, most are under 400. Shared DTOs in `types.rs`, `AppState` in `state.rs`, Grafana concerns in `grafana.rs`, Claude subprocess in `investigation.rs`, cooldown in `cooldown.rs`, correlation in `correlation.rs`. Prompt, viewer, and RPC split into directory modules with clear submodule boundaries.

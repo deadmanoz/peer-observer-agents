@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peer Profiles — peer-observer</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg-card: #161b22; --bg-hover: #1c2128;
+    --border: #30363d; --text: #c9d1d9; --text-muted: #8b949e;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --blue: #58a6ff; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+
+  /* Header */
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; font-weight: 600; white-space: nowrap; }
+  header .stats { font-size: 13px; color: var(--text-muted); }
+
+  /* Auth bar */
+  .auth-bar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
+  .auth-bar input { flex: 1; max-width: 400px; padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+  .auth-bar button, .controls button { padding: 6px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 13px; }
+  .auth-bar button:hover, .controls button:hover { background: var(--bg-hover); }
+
+  /* Filters */
+  .filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .filters select, .filters input { padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+  .filters select { min-width: 120px; }
+  .filters input[type="search"] { min-width: 200px; }
+  .controls { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+  .controls label { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+  /* Stats bar */
+  .stats-bar { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 10px 16px; }
+  .stat-card .stat-value { font-size: 20px; font-weight: 600; font-family: 'SF Mono', Consolas, monospace; }
+  .stat-card .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
+  .host-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .host-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; background: rgba(88,166,255,0.15); color: var(--blue); }
+  .host-tag.stale { opacity: 0.5; }
+  .host-tag.stale::after { content: ' (stale)'; font-weight: 400; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; position: sticky; top: 0; background: var(--bg); white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border); cursor: pointer; }
+  tbody tr:hover { background: var(--bg-hover); }
+  tbody td { padding: 8px 10px; vertical-align: top; }
+  td.mono { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
+  td.num { text-align: right; font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
+
+  /* Network badges */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .badge-ipv4 { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-ipv6 { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .badge-onion { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .badge-i2p { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .badge-cjdns { background: rgba(248,81,73,0.15); color: var(--red); }
+
+  /* Detail view */
+  .detail-view { background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 20px; }
+  .detail-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .detail-header h2 { font-size: 16px; font-weight: 600; }
+  .back-btn { padding: 6px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 13px; }
+  .back-btn:hover { background: var(--bg-hover); }
+  .detail-identity { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-bottom: 20px; }
+  .detail-field { font-size: 13px; }
+  .detail-field .label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; display: block; }
+  .detail-field .value { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; }
+  .detail-section { margin-bottom: 20px; }
+  .detail-section h3 { font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; }
+  .detail-section table { background: var(--bg); border-radius: 4px; }
+  .detail-section tbody tr:last-child { border-bottom: none; }
+
+  /* Status badges for presence windows */
+  .status-active { color: var(--green); }
+  .status-closed { color: var(--text-muted); }
+
+  /* Loading / empty */
+  .status-msg { text-align: center; padding: 40px; color: var(--text-muted); }
+  .pagination { display: flex; justify-content: center; padding: 16px; }
+  .pagination button { padding: 8px 20px; }
+
+  /* Hidden */
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Peer Profiles</h1>
+    <span class="stats" id="stats"></span>
+  </header>
+
+  <div class="auth-bar" id="auth-bar">
+    <input type="password" id="token-input" placeholder="Bearer token" autocomplete="off">
+    <button onclick="authenticate()">Connect</button>
+  </div>
+
+  <div id="stats-bar" class="stats-bar hidden"></div>
+
+  <div class="filters hidden" id="filters-bar">
+    <select id="filter-network">
+      <option value="">All networks</option>
+      <option value="ipv4">IPv4</option>
+      <option value="ipv6">IPv6</option>
+      <option value="onion">Onion</option>
+      <option value="i2p">I2P</option>
+      <option value="cjdns">CJDNS</option>
+    </select>
+    <select id="filter-host"><option value="">All hosts</option></select>
+    <input type="search" id="search-input" placeholder="Search address or subversion...">
+    <div class="controls">
+      <select id="tz-toggle" style="min-width:auto;">
+        <option value="utc">UTC</option>
+        <option value="local" id="tz-local-option">Local</option>
+      </select>
+      <button onclick="loadPeers()">Refresh</button>
+    </div>
+  </div>
+
+  <div id="content">
+    <div class="status-msg" id="status">Enter your token to connect.</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  let TOKEN = '';
+  let ALL_PEERS = [];
+  let CURRENT_OFFSET = 0;
+  let HAS_MORE = false;
+  let STATS_DATA = null;
+  let PROXY_AUTH = false;
+
+  // Current view: 'list' or 'detail'
+  let VIEW = 'list';
+
+  // Timezone display state.
+  const USER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let USE_LOCAL_TZ = document.getElementById('tz-toggle').value === 'local';
+
+  // Set the Local option label to show the IANA zone ID.
+  document.getElementById('tz-local-option').textContent = 'Local (' + USER_TZ + ')';
+
+  // Page size for peer list pagination.
+  const PAGE_SIZE = 100;
+
+  // Monotonic request ID to discard stale responses.
+  let REQUEST_ID = 0;
+
+  // Safe status message helper (uses textContent, not innerHTML).
+  function showStatus(container, text) {
+    container.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'status-msg';
+    div.textContent = text;
+    container.appendChild(div);
+  }
+
+  function fetchOpts() {
+    return PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
+  }
+
+  window.authenticate = function() {
+    TOKEN = document.getElementById('token-input').value.trim();
+    if (!TOKEN) return;
+    sessionStorage.setItem('peer-profiles-token', TOKEN);
+    document.getElementById('auth-bar').classList.add('hidden');
+    document.getElementById('filters-bar').classList.remove('hidden');
+    document.getElementById('stats-bar').classList.remove('hidden');
+    loadStats();
+    loadPeers();
+  };
+
+  // Handle Enter key on token input
+  document.getElementById('token-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') authenticate();
+  });
+
+  // Restore token from sessionStorage
+  (function restoreSession() {
+    var saved = sessionStorage.getItem('peer-profiles-token');
+    if (saved) {
+      TOKEN = saved;
+      document.getElementById('auth-bar').classList.add('hidden');
+      document.getElementById('filters-bar').classList.remove('hidden');
+      document.getElementById('stats-bar').classList.remove('hidden');
+      loadStats();
+      loadPeers();
+    }
+  })();
+
+  // Auto-detect proxy auth (skip if already authenticated via session restore or manual auth)
+  (async function detectProxyAuth() {
+    if (TOKEN) return;
+    try {
+      var resp = await fetch('/api/peers/stats');
+      // Re-check after await — user may have authenticated manually while fetch was in-flight
+      if (resp.ok && !TOKEN && !PROXY_AUTH) {
+        PROXY_AUTH = true;
+        document.getElementById('auth-bar').classList.add('hidden');
+        document.getElementById('filters-bar').classList.remove('hidden');
+        document.getElementById('stats-bar').classList.remove('hidden');
+        loadStats();
+        loadPeers();
+      }
+    } catch(e) { /* fall through to manual auth */ }
+  })();
+
+  async function loadStats() {
+    try {
+      var resp = await fetch('/api/peers/stats', fetchOpts());
+      if (!resp.ok) return;
+      STATS_DATA = await resp.json();
+      renderStats();
+      populateHostFilter();
+    } catch(e) { /* stats are non-critical */ }
+  }
+
+  function renderStats() {
+    var bar = document.getElementById('stats-bar');
+    bar.innerHTML = '';
+    if (!STATS_DATA) return;
+
+    addStatCard(bar, String(STATS_DATA.total_peers || 0), 'Total Peers');
+    addStatCard(bar, String(STATS_DATA.total_observations || 0), 'Observations');
+    addStatCard(bar, String(STATS_DATA.active_windows || 0), 'Active Windows');
+
+    // Network breakdown (peers_by_network is an array of {network, count})
+    if (STATS_DATA.peers_by_network) {
+      for (var n = 0; n < STATS_DATA.peers_by_network.length; n++) {
+        var nc = STATS_DATA.peers_by_network[n];
+        addStatCard(bar, String(nc.count || 0), (nc.network || '').toUpperCase());
+      }
+    }
+
+    // Host status
+    if (STATS_DATA.hosts && STATS_DATA.hosts.length > 0) {
+      var hostCard = document.createElement('div');
+      hostCard.className = 'stat-card';
+      var hostLabel = document.createElement('div');
+      hostLabel.className = 'stat-label';
+      hostLabel.textContent = 'Hosts';
+      hostCard.appendChild(hostLabel);
+      var hostList = document.createElement('div');
+      hostList.className = 'host-list';
+      hostList.style.marginTop = '4px';
+      for (var i = 0; i < STATS_DATA.hosts.length; i++) {
+        var h = STATS_DATA.hosts[i];
+        var tag = document.createElement('span');
+        tag.className = 'host-tag';
+        if (h.stale) tag.classList.add('stale');
+        tag.textContent = h.host || h;
+        hostList.appendChild(tag);
+      }
+      hostCard.appendChild(hostList);
+      bar.appendChild(hostCard);
+    }
+  }
+
+  function addStatCard(container, value, label) {
+    var card = document.createElement('div');
+    card.className = 'stat-card';
+    var valDiv = document.createElement('div');
+    valDiv.className = 'stat-value';
+    valDiv.textContent = value;
+    card.appendChild(valDiv);
+    var labDiv = document.createElement('div');
+    labDiv.className = 'stat-label';
+    labDiv.textContent = label;
+    card.appendChild(labDiv);
+    container.appendChild(card);
+  }
+
+  function populateHostFilter() {
+    if (!STATS_DATA || !STATS_DATA.hosts) return;
+    var sel = document.getElementById('filter-host');
+    var current = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
+    for (var i = 0; i < STATS_DATA.hosts.length; i++) {
+      var h = STATS_DATA.hosts[i];
+      var hostName = h.host || h;
+      var opt = document.createElement('option');
+      opt.value = hostName;
+      opt.textContent = hostName;
+      sel.appendChild(opt);
+    }
+    sel.value = current;
+  }
+
+  window.loadPeers = async function(offset) {
+    if (VIEW !== 'list') {
+      VIEW = 'list';
+    }
+    var content = document.getElementById('content');
+    var myRequestId = ++REQUEST_ID;
+
+    if (!offset) {
+      CURRENT_OFFSET = 0;
+      showStatus(content, 'Loading...');
+    }
+
+    var params = new URLSearchParams();
+    var network = document.getElementById('filter-network').value;
+    var host = document.getElementById('filter-host').value;
+    if (network) params.set('network', network);
+    if (host) params.set('host', host);
+    params.set('limit', String(PAGE_SIZE));
+    params.set('offset', String(offset || 0));
+
+    try {
+      var resp = await fetch('/api/peers?' + params.toString(), fetchOpts());
+
+      if (myRequestId !== REQUEST_ID) return;
+
+      if (resp.status === 401) {
+        sessionStorage.removeItem('peer-profiles-token');
+        document.getElementById('auth-bar').classList.remove('hidden');
+        document.getElementById('filters-bar').classList.add('hidden');
+        document.getElementById('stats-bar').classList.add('hidden');
+        showStatus(content, 'Invalid token. Please try again.');
+        return;
+      }
+      if (!resp.ok) {
+        showStatus(content, 'Error: ' + resp.status);
+        return;
+      }
+
+      var data = await resp.json();
+      if (myRequestId !== REQUEST_ID) return;
+
+      var peers = Array.isArray(data) ? data : (data.peers || []);
+      HAS_MORE = peers.length === PAGE_SIZE;
+
+      if (!offset) {
+        ALL_PEERS = peers;
+        CURRENT_OFFSET = peers.length;
+      } else {
+        ALL_PEERS = ALL_PEERS.concat(peers);
+        CURRENT_OFFSET = (offset || 0) + peers.length;
+      }
+
+      renderPeerList();
+    } catch(e) {
+      if (myRequestId !== REQUEST_ID) return;
+      showStatus(content, 'Connection error: ' + e.message);
+    }
+  };
+
+  function renderPeerList() {
+    var content = document.getElementById('content');
+    var searchTerm = document.getElementById('search-input').value.toLowerCase();
+
+    var filtered = ALL_PEERS;
+    if (searchTerm) {
+      filtered = ALL_PEERS.filter(function(p) {
+        var addr = (p.address || '').toLowerCase();
+        var subver = (p.latest_subversion || '').toLowerCase();
+        return addr.includes(searchTerm) || subver.includes(searchTerm);
+      });
+    }
+
+    document.getElementById('stats').textContent =
+      filtered.length + ' peers' + (filtered.length !== ALL_PEERS.length ? ' (filtered from ' + ALL_PEERS.length + ')' : '');
+
+    if (filtered.length === 0) {
+      content.innerHTML = '';
+      var msg = document.createElement('div');
+      msg.className = 'status-msg';
+      msg.textContent = ALL_PEERS.length === 0 ? 'No peers found.' : 'No peers match your search.';
+      content.appendChild(msg);
+      return;
+    }
+
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var headerRow = document.createElement('tr');
+    var cols = ['Address', 'Network', 'First Seen', 'Last Seen', 'Latest Subversion', 'Observations', 'Active Hosts'];
+    for (var c = 0; c < cols.length; c++) {
+      var th = document.createElement('th');
+      th.textContent = cols[c];
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    for (var i = 0; i < filtered.length; i++) {
+      var peer = filtered[i];
+      var row = document.createElement('tr');
+      row.addEventListener('click', (function(p) { return function() { loadPeerDetail(p.peer_id); }; })(peer));
+
+      addCell(row, peer.address || '', 'mono');
+
+      // Network badge
+      var ntd = document.createElement('td');
+      var badge = document.createElement('span');
+      badge.className = 'badge badge-' + (peer.network || '').toLowerCase();
+      badge.textContent = (peer.network || '').toUpperCase();
+      ntd.appendChild(badge);
+      row.appendChild(ntd);
+
+      addCell(row, formatTime(peer.first_seen), 'mono');
+      addCell(row, formatTime(peer.last_seen), 'mono');
+      addCell(row, peer.latest_subversion || '', '');
+      addCell(row, String(peer.observation_count || 0), 'num');
+      addCell(row, (peer.active_on_hosts || []).join(', '), '');
+
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+
+    content.innerHTML = '';
+    content.appendChild(table);
+
+    // Pagination
+    if (HAS_MORE) {
+      var pagDiv = document.createElement('div');
+      pagDiv.className = 'pagination';
+      var btn = document.createElement('button');
+      btn.textContent = 'Load more';
+      btn.addEventListener('click', function() { loadPeers(CURRENT_OFFSET); });
+      pagDiv.appendChild(btn);
+      content.appendChild(pagDiv);
+    }
+  }
+
+  async function loadPeerDetail(peerId) {
+    VIEW = 'detail';
+    var content = document.getElementById('content');
+    showStatus(content, 'Loading peer details...');
+
+    try {
+      var resp = await fetch('/api/peers/' + encodeURIComponent(peerId), fetchOpts());
+
+      if (resp.status === 401) {
+        sessionStorage.removeItem('peer-profiles-token');
+        document.getElementById('auth-bar').classList.remove('hidden');
+        document.getElementById('filters-bar').classList.add('hidden');
+        document.getElementById('stats-bar').classList.add('hidden');
+        showStatus(content, 'Invalid token. Please try again.');
+        return;
+      }
+      if (!resp.ok) {
+        showStatus(content, 'Error loading peer: ' + resp.status);
+        return;
+      }
+
+      var data = await resp.json();
+      renderPeerDetail(data);
+    } catch(e) {
+      showStatus(content, 'Connection error: ' + e.message);
+    }
+  }
+
+  function renderPeerDetail(profile) {
+    // profile = { peer: {...}, recent_observations: [...], software_history: [...], presence_windows: [...] }
+    var peer = profile.peer || {};
+    var content = document.getElementById('content');
+    content.innerHTML = '';
+
+    var view = document.createElement('div');
+    view.className = 'detail-view';
+
+    // Header with back button
+    var headerDiv = document.createElement('div');
+    headerDiv.className = 'detail-header';
+    var backBtn = document.createElement('button');
+    backBtn.className = 'back-btn';
+    backBtn.textContent = 'Back';
+    backBtn.addEventListener('click', function() {
+      VIEW = 'list';
+      renderPeerList();
+    });
+    headerDiv.appendChild(backBtn);
+    var h2 = document.createElement('h2');
+    h2.textContent = peer.address || 'Peer Detail';
+    headerDiv.appendChild(h2);
+    if (peer.network) {
+      var badge = document.createElement('span');
+      badge.className = 'badge badge-' + peer.network.toLowerCase();
+      badge.textContent = peer.network.toUpperCase();
+      headerDiv.appendChild(badge);
+    }
+    view.appendChild(headerDiv);
+
+    // Identity fields
+    var identity = document.createElement('div');
+    identity.className = 'detail-identity';
+    addDetailField(identity, 'Address', peer.address);
+    addDetailField(identity, 'Network', peer.network);
+    addDetailField(identity, 'First Seen', formatTime(peer.first_seen));
+    addDetailField(identity, 'Last Seen', formatTime(peer.last_seen));
+    view.appendChild(identity);
+
+    // Software History Timeline
+    if (profile.software_history && profile.software_history.length > 0) {
+      var swSection = document.createElement('div');
+      swSection.className = 'detail-section';
+      var swH3 = document.createElement('h3');
+      swH3.textContent = 'Software History';
+      swSection.appendChild(swH3);
+
+      var swTable = document.createElement('table');
+      var swThead = document.createElement('thead');
+      var swHR = document.createElement('tr');
+      var swCols = ['Time', 'Subversion', 'Version', 'Services'];
+      for (var c = 0; c < swCols.length; c++) {
+        var th = document.createElement('th');
+        th.textContent = swCols[c];
+        swHR.appendChild(th);
+      }
+      swThead.appendChild(swHR);
+      swTable.appendChild(swThead);
+
+      var swTbody = document.createElement('tbody');
+      for (var i = 0; i < profile.software_history.length; i++) {
+        var sw = profile.software_history[i];
+        var tr = document.createElement('tr');
+        tr.style.cursor = 'default';
+        addCell(tr, formatTime(sw.observed_at), 'mono');
+        addCell(tr, sw.subversion || '', 'mono');
+        addCell(tr, sw.version != null ? String(sw.version) : '', 'mono');
+        addCell(tr, sw.services || '', 'mono');
+        swTbody.appendChild(tr);
+      }
+      swTable.appendChild(swTbody);
+      swSection.appendChild(swTable);
+      view.appendChild(swSection);
+    }
+
+    // Presence Windows
+    if (profile.presence_windows && profile.presence_windows.length > 0) {
+      var pwSection = document.createElement('div');
+      pwSection.className = 'detail-section';
+      var pwH3 = document.createElement('h3');
+      pwH3.textContent = 'Presence Windows';
+      pwSection.appendChild(pwH3);
+
+      var pwTable = document.createElement('table');
+      var pwThead = document.createElement('thead');
+      var pwHR = document.createElement('tr');
+      var pwCols = ['Host', 'First Observed', 'Last Observed', 'Duration', 'Status'];
+      for (var c = 0; c < pwCols.length; c++) {
+        var th = document.createElement('th');
+        th.textContent = pwCols[c];
+        pwHR.appendChild(th);
+      }
+      pwThead.appendChild(pwHR);
+      pwTable.appendChild(pwThead);
+
+      var pwTbody = document.createElement('tbody');
+      for (var i = 0; i < profile.presence_windows.length; i++) {
+        var pw = profile.presence_windows[i];
+        var tr = document.createElement('tr');
+        tr.style.cursor = 'default';
+        addCell(tr, pw.host || '', '');
+        addCell(tr, formatTime(pw.first_observed), 'mono');
+        addCell(tr, formatTime(pw.last_observed), 'mono');
+        addCell(tr, formatWindowDuration(pw.first_observed, pw.last_observed), 'mono');
+
+        // Status cell with color — API returns `closed: bool`
+        var statusTd = document.createElement('td');
+        var statusSpan = document.createElement('span');
+        var isActive = !pw.closed;
+        statusSpan.className = isActive ? 'status-active' : 'status-closed';
+        statusSpan.textContent = isActive ? 'active' : 'closed';
+        statusTd.appendChild(statusSpan);
+        tr.appendChild(statusTd);
+
+        pwTbody.appendChild(tr);
+      }
+      pwTable.appendChild(pwTbody);
+      pwSection.appendChild(pwTable);
+      view.appendChild(pwSection);
+    }
+
+    // Recent Observations
+    if (profile.recent_observations && profile.recent_observations.length > 0) {
+      var obsSection = document.createElement('div');
+      obsSection.className = 'detail-section';
+      var obsH3 = document.createElement('h3');
+      obsH3.textContent = 'Recent Observations';
+      obsSection.appendChild(obsH3);
+
+      var obsTable = document.createElement('table');
+      var obsThead = document.createElement('thead');
+      var obsHR = document.createElement('tr');
+      var obsCols = ['Host', 'Time', 'Direction', 'Connection Type', 'Connected Since', 'Heights'];
+      for (var c = 0; c < obsCols.length; c++) {
+        var th = document.createElement('th');
+        th.textContent = obsCols[c];
+        obsHR.appendChild(th);
+      }
+      obsThead.appendChild(obsHR);
+      obsTable.appendChild(obsThead);
+
+      var obsTbody = document.createElement('tbody');
+      for (var i = 0; i < profile.recent_observations.length; i++) {
+        var obs = profile.recent_observations[i];
+        var tr = document.createElement('tr');
+        tr.style.cursor = 'default';
+        addCell(tr, obs.host || '', '');
+        addCell(tr, formatTime(obs.observed_at), 'mono');
+        addCell(tr, obs.inbound ? 'inbound' : 'outbound', '');
+        addCell(tr, obs.connection_type || '', '');
+        addCell(tr, obs.conntime != null ? formatTime(new Date(obs.conntime * 1000).toISOString()) : '', 'mono');
+        var heights = [];
+        if (obs.synced_headers != null) heights.push('H:' + obs.synced_headers);
+        if (obs.synced_blocks != null) heights.push('B:' + obs.synced_blocks);
+        addCell(tr, heights.join(' / '), 'num');
+        obsTbody.appendChild(tr);
+      }
+      obsTable.appendChild(obsTbody);
+      obsSection.appendChild(obsTable);
+      view.appendChild(obsSection);
+    }
+
+    content.appendChild(view);
+  }
+
+  function addDetailField(container, label, value) {
+    var div = document.createElement('div');
+    div.className = 'detail-field';
+    var lab = document.createElement('span');
+    lab.className = 'label';
+    lab.textContent = label;
+    div.appendChild(lab);
+    var val = document.createElement('span');
+    val.className = 'value';
+    val.textContent = value || '';
+    div.appendChild(val);
+    container.appendChild(div);
+  }
+
+  function addCell(row, text, cls) {
+    var td = document.createElement('td');
+    if (cls) td.className = cls;
+    td.textContent = text;
+    row.appendChild(td);
+  }
+
+  // Stable YYYY-MM-DD HH:MM:SS formatter using formatToParts.
+  var UTC_FMT = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  });
+  var LOCAL_FMT = new Intl.DateTimeFormat('en-GB', {
+    timeZone: USER_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    timeZoneName: 'short'
+  });
+
+  function partsToString(parts) {
+    var p = {};
+    var tzName = '';
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (part.type === 'timeZoneName') { tzName = part.value; continue; }
+      p[part.type] = part.value;
+    }
+    var date = p.year + '-' + p.month + '-' + p.day;
+    var time = p.hour + ':' + p.minute + ':' + p.second;
+    return date + ' ' + time + (tzName ? ' ' + tzName : '');
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    if (USE_LOCAL_TZ) {
+      return partsToString(LOCAL_FMT.formatToParts(d));
+    }
+    return partsToString(UTC_FMT.formatToParts(d)) + ' Z';
+  }
+
+  function formatWindowDuration(first, last) {
+    if (!first || !last) return '';
+    var ms = new Date(last) - new Date(first);
+    if (isNaN(ms) || ms < 0) return '';
+    return formatDurationMs(ms);
+  }
+
+  function formatDurationMs(ms) {
+    if (ms < 1000) return ms + 'ms';
+    var seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return seconds + 's';
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ' + (seconds % 60) + 's';
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ' + (minutes % 60) + 'm';
+    var days = Math.floor(hours / 24);
+    return days + 'd ' + (hours % 24) + 'h';
+  }
+
+  // Debounced search
+  var searchTimeout;
+  document.getElementById('search-input').addEventListener('input', function() {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(function() {
+      if (VIEW === 'list') renderPeerList();
+    }, 200);
+  });
+
+  // Filter change handlers — reload from server
+  var filterIds = ['filter-network', 'filter-host'];
+  for (var f = 0; f < filterIds.length; f++) {
+    document.getElementById(filterIds[f]).addEventListener('change', function() {
+      CURRENT_OFFSET = 0;
+      loadPeers();
+    });
+  }
+
+  // Timezone toggle — re-render without refetching.
+  document.getElementById('tz-toggle').addEventListener('change', function() {
+    USE_LOCAL_TZ = this.value === 'local';
+    if (VIEW === 'list' && ALL_PEERS.length > 0) renderPeerList();
+  });
+
+})();
+</script>
+</body>
+</html>

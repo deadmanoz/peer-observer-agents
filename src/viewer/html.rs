@@ -61,6 +61,9 @@ mod tests {
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: Some("token".into()),
             log_write_mutex: tokio::sync::Mutex::new(()),
+            profile_db: None,
+            profiles_poll_interval: std::time::Duration::from_secs(300),
+            profiles_retention_days: 90,
         });
 
         let app = Router::new()
@@ -105,6 +108,9 @@ mod tests {
             cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             viewer_auth_token: None,
             log_write_mutex: tokio::sync::Mutex::new(()),
+            profile_db: None,
+            profiles_poll_interval: std::time::Duration::from_secs(300),
+            profiles_retention_days: 90,
         });
 
         let app = Router::new()
