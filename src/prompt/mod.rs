@@ -9,7 +9,7 @@ pub(crate) use sanitization::strip_control_chars;
 
 use chrono::Utc;
 use instructions::investigation_instructions;
-use sanitization::{sanitize_host_for_prompt};
+use sanitization::sanitize_host_for_prompt;
 
 pub fn build_investigation_prompt(ctx: &AlertContext) -> String {
     let AlertContext {

@@ -230,11 +230,7 @@ async fn handle_webhook(
     }
 }
 
-async fn process_alert(
-    state: &AppState,
-    alert: &types::Alert,
-    aid: &AlertId,
-) -> Result<()> {
+async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) -> Result<()> {
     // Cooldown suppression: coalesce retriggers of the same (alertname, host, threadname)
     // within the cooldown window. Checked before the semaphore to avoid holding
     // a concurrency slot for suppressed alerts.

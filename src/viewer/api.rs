@@ -244,11 +244,9 @@ pub(crate) async fn api_logs(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::log_file::append_jsonl_log;
-    use super::super::log_schema::tests::{
-        sample_structured_entry, sample_telemetry,
-    };
+    use super::super::log_schema::tests::{sample_structured_entry, sample_telemetry};
+    use super::*;
     use chrono::{TimeZone, Utc};
 
     #[test]

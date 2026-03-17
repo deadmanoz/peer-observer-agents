@@ -44,11 +44,9 @@ pub(crate) async fn append_jsonl_log(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::log_schema::tests::{
-        sample_raw_fallback_entry, sample_structured_entry,
-    };
+    use super::super::log_schema::tests::{sample_raw_fallback_entry, sample_structured_entry};
     use super::super::log_schema::EntryKind;
+    use super::*;
 
     #[tokio::test]
     async fn append_and_read_jsonl() {

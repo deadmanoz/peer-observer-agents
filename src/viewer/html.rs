@@ -1,10 +1,6 @@
 //! `/logs` HTML page — serves the self-contained log viewer.
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Html,
-};
+use axum::{extract::State, http::StatusCode, response::Html};
 use std::sync::Arc;
 
 use crate::state::AppState;
