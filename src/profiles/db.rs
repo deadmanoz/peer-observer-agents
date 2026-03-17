@@ -545,6 +545,10 @@ impl ProfileDb {
     /// a long accumulation period this could block API reads briefly. Acceptable
     /// because orphan counts are bounded by total unique peers (~hundreds), not
     /// by observation volume (~millions).
+    ///
+    /// Limitation: peers with unclosed presence windows (e.g. from a poller crash
+    /// before stale-window recovery ran) will not be pruned. Under normal operation
+    /// the poller's stale-window recovery closes these promptly.
     pub async fn prune_orphaned_peers(&self, cutoff: &str) -> Result<usize> {
         let conn = Arc::clone(&self.conn);
         let cutoff = cutoff.to_string();
@@ -552,7 +556,8 @@ impl ProfileDb {
             let mut conn = conn.lock().unwrap();
             let tx = conn.transaction()?;
 
-            // Delete software_history anchor rows for orphan candidates.
+            // Delete all remaining software_history rows for orphan candidates,
+            // including the anchor rows preserved by prune_software_history.
             let sw_deleted = tx.execute(
                 "DELETE FROM software_history WHERE peer_id IN (
                     SELECT p.peer_id FROM peers p
