@@ -250,7 +250,7 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
                 info!(
                     alert_id = %aid,
                     cooldown_secs = state.cooldown.as_secs(),
-                    ago_secs = ago.as_secs(),
+                    elapsed_secs = ago.as_secs(),
                     "skipping: recent investigation within cooldown window"
                 );
                 return Ok(());
