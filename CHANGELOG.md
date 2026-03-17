@@ -10,10 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add peer profiles component: continuously polls `getpeerinfo` from configured Bitcoin Core nodes and builds persistent per-peer profiles in SQLite. Tracks peer identities, connection observations, software version changes, and presence windows across hosts. New `/peers` viewer and `/api/peers/*` API endpoints with bearer auth. Configurable via `ANNOTATION_AGENT_PROFILES_DB`, `ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS`, and `ANNOTATION_AGENT_PROFILES_RETENTION_DAYS`.
+- Add date range filter and browser timezone toggle to log viewer — `logged_after`/`logged_before` query parameters with RFC 3339 support
 
 ### Changed
 
 - Modularize codebase: split monolithic `main.rs` (1745 lines), `prompt.rs` (1579 lines), `viewer.rs` (1630 lines), and `rpc.rs` (853 lines) into focused modules — no file exceeds 970 lines, most are under 400. Shared DTOs in `types.rs`, `AppState` in `state.rs`, Grafana concerns in `grafana.rs`, Claude subprocess in `investigation.rs`, cooldown in `cooldown.rs`, correlation in `correlation.rs`. Prompt, viewer, and RPC split into directory modules with clear submodule boundaries.
+
+### Fixed
+
+- Fix peer profiles `services` field names not sorted consistently across observations, causing spurious software change entries
+- Fix orphaned peers remaining in database after all their observations are pruned by retention
+- Release mutex between prune batches to reduce lock contention during retention cleanup
+
+## [0.5.3] - 2026-03-16
 
 ### Fixed
 
@@ -104,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow: fmt, clippy, test, nix build
 - Comprehensive documentation (deployment, testing, telemetry)
 
-[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.4.0...v0.5.0

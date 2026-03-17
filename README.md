@@ -56,6 +56,25 @@ curl -X POST http://127.0.0.1:9099/webhook \  # sample alert
 
 See [docs/testing.md](docs/testing.md) for the full smoke test walkthrough and development checks.
 
+## Peer Profiles
+
+An optional component that continuously polls `getpeerinfo` from configured Bitcoin Core nodes and builds persistent per-peer profiles in SQLite. Gives operators visibility into who connects, how their software changes over time, and connection patterns across hosts — without waiting for an alert to trigger.
+
+```
+  peer-observer-agent (background task)
+        |
+        |--> Bitcoin Core RPC (getpeerinfo, per host)
+        |
+        '--> SQLite DB
+              |
+              |--> /peers        (HTML viewer)
+              '--> /api/peers/*  (JSON API)
+```
+
+Enable by setting `ANNOTATION_AGENT_PROFILES_DB` to a SQLite file path. The poller starts when both `PROFILES_DB` and `RPC_HOSTS` are configured; the viewer/API routes are registered when both `PROFILES_DB` and `VIEWER_AUTH_TOKEN` are set.
+
+See [Peer Profiles](docs/profiles.md) for schema details, identity strategy, presence window tracking, and retention.
+
 ### Building
 
 ```bash
@@ -78,4 +97,5 @@ just fmt     # auto-format code
 - [Testing](docs/testing.md) — smoke tests, unit tests, CI
 - [Deployment](docs/deployment.md) — NixOS, configuration reference, security assumptions, MCP config, health endpoint
 - [Telemetry](docs/telemetry.md) — log correlation, structured logging fields, prior context scoping
+- [Peer Profiles](docs/profiles.md) — peer identity tracking, presence windows, software change detection, SQLite schema
 - [Releasing](docs/releasing.md) — versioning, changelog, release workflow
