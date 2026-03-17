@@ -142,9 +142,11 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
     Ok(())
 }
 
-/// Discriminating substring in policy-violation error messages, shared between
-/// `check_peer_intervention_policy` (producer) and `main.rs` (consumer) to avoid
-/// fragile string matching against the full error text.
+/// Discriminating substring in policy-violation error messages. Used in
+/// `check_peer_intervention_policy`'s bail message and in tests to avoid
+/// hardcoding the error text. Callers in `main.rs` now use the typed
+/// `AnnotationError` enum — this constant centralises the error-message
+/// text to prevent test drift.
 const POLICY_ERROR_MARKER: &str = "peer-intervention";
 
 /// Check content policy: reject annotations containing peer-intervention commands.
@@ -328,24 +330,46 @@ pub(crate) struct RawFallbackResult {
     pub(crate) log_text: String,
     /// Whether the policy was violated.
     pub(crate) policy_violated: bool,
+    /// The pattern that matched, if any (for diagnostic logging).
+    pub(crate) matched_pattern: Option<&'static str>,
 }
 
 /// Check raw fallback text against the peer-intervention policy and produce
 /// safe content for both Grafana and the log viewer.
+///
+/// Scans both the raw text and a JSON-unescaped version (resolving `\uXXXX`
+/// sequences) to catch Unicode-escaped prohibited commands that would evade
+/// plain substring matching on the raw bytes.
 pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
-    if contains_peer_intervention(raw).is_some() {
+    // First check the raw text directly.
+    let matched = contains_peer_intervention(raw);
+    // Also check a JSON-unescaped version to catch \uXXXX-encoded commands.
+    // serde_json::from_str on a JSON string literal resolves Unicode escapes.
+    let matched = matched.or_else(|| {
+        if !raw.contains("\\u") {
+            return None;
+        }
+        // Wrap in quotes to make it a valid JSON string, then deserialize.
+        let json_str = format!("\"{}\"", raw.replace('"', "\\\""));
+        serde_json::from_str::<String>(&json_str)
+            .ok()
+            .and_then(|decoded| contains_peer_intervention(&decoded))
+    });
+    if let Some(pattern) = matched {
         let stub = "Investigation output contained a prohibited peer-intervention \
                      command. Original text redacted.";
         RawFallbackResult {
             grafana_body: format!("<b>POLICY VIOLATION:</b> {stub}"),
             log_text: stub.to_string(),
             policy_violated: true,
+            matched_pattern: Some(pattern),
         }
     } else {
         RawFallbackResult {
             grafana_body: html_escape(raw),
             log_text: raw.to_string(),
             policy_violated: false,
+            matched_pattern: None,
         }
     }
 }
@@ -928,7 +952,7 @@ mod tests {
         let json = r#"{"verdict":"action_required","action":"run bitcoin-cli disconnectnode 1.2.3.4:8333",
             "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
         let err = parse_structured_annotation(json).unwrap_err();
-        assert!(err.to_string().contains("peer-intervention"));
+        assert!(err.to_string().contains(POLICY_ERROR_MARKER));
     }
 
     #[test]
@@ -937,7 +961,7 @@ mod tests {
             "summary":"consider running setban on 1.2.3.4","cause":"test","scope":"test",
             "evidence":["a","b"]}"#;
         let err = parse_structured_annotation(json).unwrap_err();
-        assert!(err.to_string().contains("peer-intervention"));
+        assert!(err.to_string().contains(POLICY_ERROR_MARKER));
     }
 
     #[test]
@@ -946,7 +970,7 @@ mod tests {
             "summary":"test","cause":"test","scope":"test",
             "evidence":["run disconnectnode to fix","metric b"]}"#;
         let err = parse_structured_annotation(json).unwrap_err();
-        assert!(err.to_string().contains("peer-intervention"));
+        assert!(err.to_string().contains(POLICY_ERROR_MARKER));
     }
 
     #[test]
@@ -990,6 +1014,25 @@ mod tests {
         assert!(!result.grafana_body.contains("disconnectnode"));
         assert!(!result.log_text.contains("disconnectnode"));
         assert!(result.log_text.contains("redacted"));
+    }
+
+    #[test]
+    fn raw_fallback_redacts_unicode_escaped_prohibited_text() {
+        // JSON Unicode escapes for "d" = \u0064, so "disconnectnode" is
+        // "\u0064isconnectnode". The raw text contains literal backslash-u.
+        let result = sanitize_raw_fallback(
+            "You should run bitcoin-cli \\u0064isconnectnode 1.2.3.4:8333",
+        );
+        // The \u escape decodes "d" which makes "disconnectnode" — should be caught
+        assert!(result.policy_violated);
+        assert!(result.matched_pattern.is_some());
+    }
+
+    #[test]
+    fn raw_fallback_exposes_matched_pattern() {
+        let result = sanitize_raw_fallback("run bitcoin-cli setban 1.2.3.4 add");
+        assert!(result.policy_violated);
+        assert_eq!(result.matched_pattern, Some("setban"));
     }
 
     #[test]
