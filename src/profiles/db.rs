@@ -486,14 +486,11 @@ impl ProfileDb {
 
     /// Delete observations older than the given ISO 8601 cutoff, in batches.
     pub async fn prune_observations(&self, cutoff: &str) -> Result<usize> {
+        let limit = Self::PRUNE_BATCH_SIZE;
         self.prune_loop(
-            |cutoff| {
-                Box::new(move |conn: &rusqlite::Connection| {
-                    conn.execute(
-                        "DELETE FROM observations WHERE observation_id IN (SELECT observation_id FROM observations WHERE observed_at < ?1 LIMIT 10000)",
-                        params![cutoff],
-                    )
-                })
+            move |cutoff| {
+                let sql = format!("DELETE FROM observations WHERE observation_id IN (SELECT observation_id FROM observations WHERE observed_at < ?1 LIMIT {limit})");
+                Box::new(move |conn: &rusqlite::Connection| conn.execute(&sql, params![cutoff]))
             },
             cutoff,
         )
@@ -502,14 +499,11 @@ impl ProfileDb {
 
     /// Delete closed presence windows older than the given ISO 8601 cutoff, in batches.
     pub async fn prune_closed_presence_windows(&self, cutoff: &str) -> Result<usize> {
+        let limit = Self::PRUNE_BATCH_SIZE;
         self.prune_loop(
-            |cutoff| {
-                Box::new(move |conn: &rusqlite::Connection| {
-                    conn.execute(
-                        "DELETE FROM presence_windows WHERE window_id IN (SELECT window_id FROM presence_windows WHERE closed = 1 AND last_observed < ?1 LIMIT 10000)",
-                        params![cutoff],
-                    )
-                })
+            move |cutoff| {
+                let sql = format!("DELETE FROM presence_windows WHERE window_id IN (SELECT window_id FROM presence_windows WHERE closed = 1 AND last_observed < ?1 LIMIT {limit})");
+                Box::new(move |conn: &rusqlite::Connection| conn.execute(&sql, params![cutoff]))
             },
             cutoff,
         )
@@ -519,23 +513,22 @@ impl ProfileDb {
     /// Delete software history entries older than the given ISO 8601 cutoff, in batches.
     /// Preserves the most recent row per (peer_id, host) to prevent false re-detection.
     pub async fn prune_software_history(&self, cutoff: &str) -> Result<usize> {
+        let limit = Self::PRUNE_BATCH_SIZE;
         self.prune_loop(
-            |cutoff| {
-                Box::new(move |conn: &rusqlite::Connection| {
-                    conn.execute(
-                        "DELETE FROM software_history WHERE history_id IN (
-                            SELECT sh.history_id FROM software_history sh
-                            WHERE sh.observed_at < ?1
-                            AND EXISTS (
-                                SELECT 1 FROM software_history sh2
-                                WHERE sh2.peer_id = sh.peer_id AND sh2.host = sh.host
-                                AND sh2.observed_at > sh.observed_at
-                            )
-                            LIMIT 10000
-                        )",
-                        params![cutoff],
-                    )
-                })
+            move |cutoff| {
+                let sql = format!(
+                    "DELETE FROM software_history WHERE history_id IN (
+                        SELECT sh.history_id FROM software_history sh
+                        WHERE sh.observed_at < ?1
+                        AND EXISTS (
+                            SELECT 1 FROM software_history sh2
+                            WHERE sh2.peer_id = sh.peer_id AND sh2.host = sh.host
+                            AND sh2.observed_at > sh.observed_at
+                        )
+                        LIMIT {limit}
+                    )"
+                );
+                Box::new(move |conn: &rusqlite::Connection| conn.execute(&sql, params![cutoff]))
             },
             cutoff,
         )
@@ -559,7 +552,7 @@ impl ProfileDb {
             let tx = conn.transaction()?;
 
             // Delete software_history anchor rows for orphan candidates.
-            tx.execute(
+            let sw_deleted = tx.execute(
                 "DELETE FROM software_history WHERE peer_id IN (
                     SELECT p.peer_id FROM peers p
                     WHERE p.last_seen < ?1
@@ -579,6 +572,12 @@ impl ProfileDb {
             )?;
 
             tx.commit()?;
+            if sw_deleted > 0 {
+                tracing::info!(
+                    sw_history_deleted = sw_deleted,
+                    "cleaned up software_history anchors for orphaned peers"
+                );
+            }
             Ok(deleted)
         })
         .await?
