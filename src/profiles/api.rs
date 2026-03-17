@@ -63,7 +63,10 @@ pub(crate) async fn api_peers(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(json_no_cache(serde_json::to_value(peers).unwrap()))
+    Ok(json_no_cache(serde_json::to_value(peers).map_err(|e| {
+        tracing::error!(error = %e, "failed to serialize peers");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?))
 }
 
 /// `GET /api/peers/stats` — aggregate stats.
@@ -89,7 +92,10 @@ pub(crate) async fn api_peers_stats(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(json_no_cache(serde_json::to_value(stats).unwrap()))
+    Ok(json_no_cache(serde_json::to_value(stats).map_err(|e| {
+        tracing::error!(error = %e, "failed to serialize stats");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?))
 }
 
 /// `GET /api/peers/{id}` — full peer profile.
@@ -106,7 +112,10 @@ pub(crate) async fn api_peer_detail(
     })?;
 
     match profile {
-        Some(p) => Ok(json_no_cache(serde_json::to_value(p).unwrap())),
+        Some(p) => Ok(json_no_cache(serde_json::to_value(p).map_err(|e| {
+            tracing::error!(error = %e, peer_id = peer_id, "failed to serialize peer profile");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?)),
         None => Err(StatusCode::NOT_FOUND),
     }
 }

@@ -244,7 +244,7 @@ impl ProfileDb {
             // Parse now as ISO 8601, fall back to current time
             let now_dt = chrono::DateTime::parse_from_rfc3339(&now)
                 .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
+                .map_err(|e| anyhow::anyhow!("failed to parse poll timestamp '{now}': {e}"))?;
             let stale_threshold = now_dt - chrono::Duration::seconds(stale_secs);
             let stale_cutoff = stale_threshold.format("%Y-%m-%dT%H:%M:%SZ").to_string();
             conn.execute(
@@ -376,7 +376,7 @@ impl ProfileDb {
             // Step 1: Stale window recovery
             let now_dt = chrono::DateTime::parse_from_rfc3339(&now)
                 .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
+                .map_err(|e| anyhow::anyhow!("failed to parse poll timestamp '{now}': {e}"))?;
             let stale_threshold = now_dt - chrono::Duration::seconds((poll_interval_secs * 2) as i64);
             let stale_cutoff = stale_threshold.format("%Y-%m-%dT%H:%M:%SZ").to_string();
             tx.execute(

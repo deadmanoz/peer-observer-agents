@@ -91,8 +91,11 @@ async fn poll_host(
     host: &str,
     poll_interval_secs: u64,
 ) -> Result<()> {
+    // Capture timestamp before the RPC call so it represents when the snapshot
+    // was requested, not when it finished. This matters for presence window
+    // last_observed accuracy with slow/retried RPC calls.
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let peers_json = rpc_client.getpeerinfo_raw(host).await?;
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let peers = peers_json
         .as_array()
