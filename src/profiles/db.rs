@@ -486,6 +486,29 @@ impl ProfileDb {
         .await?
     }
 
+    /// Delete software history entries older than the given ISO 8601 cutoff, in batches.
+    /// Returns the total number of rows deleted.
+    pub async fn prune_software_history(&self, cutoff: &str) -> Result<usize> {
+        let conn = Arc::clone(&self.conn);
+        let cutoff = cutoff.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut total_deleted = 0usize;
+            loop {
+                let deleted = conn.execute(
+                    "DELETE FROM software_history WHERE history_id IN (SELECT history_id FROM software_history WHERE observed_at < ?1 LIMIT 10000)",
+                    params![cutoff],
+                )?;
+                total_deleted += deleted;
+                if deleted < 10000 {
+                    break;
+                }
+            }
+            Ok(total_deleted)
+        })
+        .await?
+    }
+
     /// Run `PRAGMA incremental_vacuum` to reclaim space after large deletes.
     pub async fn incremental_vacuum(&self) -> Result<()> {
         let conn = Arc::clone(&self.conn);
@@ -523,7 +546,8 @@ impl ProfileDb {
             }
 
             if let Some(ref h) = host {
-                conditions.push("EXISTS (SELECT 1 FROM presence_windows pw WHERE pw.peer_id = p.peer_id AND pw.host = ? AND pw.closed = 0)");
+                // Filters to peers ever observed on this host (not just currently active).
+                conditions.push("EXISTS (SELECT 1 FROM presence_windows pw WHERE pw.peer_id = p.peer_id AND pw.host = ?)");
                 bind_values.push(Box::new(h.clone()));
             }
 

@@ -58,8 +58,19 @@ pub fn start_poller(
                 _ => {}
             }
 
-            // Weekly incremental vacuum (every ~2016 polls at 5-min interval)
-            if poll_count.is_multiple_of(2016) {
+            match db.prune_software_history(&cutoff_str).await {
+                Ok(deleted) if deleted > 0 => {
+                    info!(deleted, "pruned old software history");
+                }
+                Err(e) => {
+                    warn!(error = %e, "software history retention pruning failed");
+                }
+                _ => {}
+            }
+
+            // Weekly incremental vacuum — compute polls-per-week from actual interval
+            let polls_per_week = (7 * 24 * 3600 / poll_interval.as_secs()).max(1);
+            if poll_count.is_multiple_of(polls_per_week) {
                 if let Err(e) = db.incremental_vacuum().await {
                     warn!(error = %e, "incremental vacuum failed");
                 }
@@ -87,7 +98,7 @@ async fn poll_host(
     let mut parsed_peers = Vec::with_capacity(peers.len());
     for peer in peers {
         let addr = peer["addr"].as_str().unwrap_or_default();
-        let network = peer["network"].as_str().unwrap_or("ipv4");
+        let network = peer["network"].as_str().unwrap_or("unknown");
         if addr.is_empty() {
             continue;
         }
