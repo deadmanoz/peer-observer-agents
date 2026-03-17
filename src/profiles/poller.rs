@@ -69,7 +69,11 @@ pub fn start_poller(
             }
 
             // Weekly incremental vacuum — compute polls-per-week from actual interval
-            let polls_per_week = (7 * 24 * 3600 / poll_interval.as_secs()).max(1);
+            let polls_per_week = if poll_interval.as_secs() == 0 {
+                1
+            } else {
+                (7 * 24 * 3600 / poll_interval.as_secs()).max(1)
+            };
             if poll_count.is_multiple_of(polls_per_week) {
                 if let Err(e) = db.incremental_vacuum().await {
                     warn!(error = %e, "incremental vacuum failed");

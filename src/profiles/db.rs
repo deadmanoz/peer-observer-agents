@@ -487,6 +487,8 @@ impl ProfileDb {
     }
 
     /// Delete software history entries older than the given ISO 8601 cutoff, in batches.
+    /// Preserves the most recent row per (peer_id, host) to prevent false re-detection
+    /// of unchanged software after pruning.
     /// Returns the total number of rows deleted.
     pub async fn prune_software_history(&self, cutoff: &str) -> Result<usize> {
         let conn = Arc::clone(&self.conn);
@@ -496,7 +498,15 @@ impl ProfileDb {
             let mut total_deleted = 0usize;
             loop {
                 let deleted = conn.execute(
-                    "DELETE FROM software_history WHERE history_id IN (SELECT history_id FROM software_history WHERE observed_at < ?1 LIMIT 10000)",
+                    "DELETE FROM software_history WHERE history_id IN (
+                        SELECT sh.history_id FROM software_history sh
+                        WHERE sh.observed_at < ?1
+                        AND sh.history_id NOT IN (
+                            SELECT MAX(sh2.history_id) FROM software_history sh2
+                            GROUP BY sh2.peer_id, sh2.host
+                        )
+                        LIMIT 10000
+                    )",
                     params![cutoff],
                 )?;
                 total_deleted += deleted;
@@ -586,8 +596,7 @@ impl ProfileDb {
                         row.get::<_, i64>(6)?,
                     ))
                 })?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Batch-fetch active hosts for all returned peers in a single query
             // to avoid N+1 while holding the mutex.
@@ -607,7 +616,7 @@ impl ProfileDb {
                     .query_map(host_params.as_slice(), |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                     })?
-                    .filter_map(|r| r.ok());
+                    .collect::<Result<Vec<_>, _>>()?;
                 for (pid, host) in rows {
                     hosts_map.entry(pid).or_default().push(host);
                 }
@@ -679,8 +688,7 @@ impl ProfileDb {
                         synced_blocks: row.get(10)?,
                     })
                 })?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Software history
             let mut sw_stmt = conn.prepare(
@@ -698,8 +706,7 @@ impl ProfileDb {
                         services: row.get(6)?,
                     })
                 })?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Presence windows (last 50)
             let mut pw_stmt = conn.prepare(
@@ -716,8 +723,7 @@ impl ProfileDb {
                         closed: row.get::<_, i32>(5)? != 0,
                     })
                 })?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             Ok(Some(PeerProfile {
                 peer,
@@ -751,8 +757,7 @@ impl ProfileDb {
                         count: row.get(1)?,
                     })
                 })?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             let total_observations: i64 =
                 conn.query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))?;
