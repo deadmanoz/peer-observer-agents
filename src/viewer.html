@@ -612,9 +612,14 @@
     const tzLabel = USE_LOCAL_TZ ? 'local' : 'UTC';
     document.getElementById('label-logged-after').textContent = 'Logged after (' + tzLabel + ')';
     document.getElementById('label-logged-before').textContent = 'Logged before (' + tzLabel + ')';
-    const afterVal = document.getElementById('filter-logged-after').value;
-    const beforeVal = document.getElementById('filter-logged-before').value;
-    if (afterVal || beforeVal) {
+    // Clear date inputs on toggle change — the same wall-clock digits would map
+    // to a different absolute time under the new interpretation, which is confusing.
+    const afterEl = document.getElementById('filter-logged-after');
+    const beforeEl = document.getElementById('filter-logged-before');
+    const hadDateFilter = afterEl.value || beforeEl.value;
+    afterEl.value = '';
+    beforeEl.value = '';
+    if (hadDateFilter) {
       NEXT_CURSOR = null;
       loadLogs();
     } else if (ALL_ENTRIES.length > 0) {

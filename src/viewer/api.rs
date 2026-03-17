@@ -1011,8 +1011,8 @@ mod tests {
     /// Helper: create test entries with deterministic logged_at timestamps.
     /// Returns entries at 20:00:00, 20:00:01, 20:00:02, 20:00:03 on 2025-06-15.
     async fn write_date_range_entries(log_path_str: &str) {
-        // SAFETY: writes must fully complete before the test app is started;
-        // this mutex is not shared with AppState.log_write_mutex.
+        // The mutex is local to this helper; each test uses a unique file path,
+        // and writes complete before the test app is started.
         let test_mutex = tokio::sync::Mutex::new(());
         for i in 0u32..4 {
             let mut entry = LogEntry::structured(
