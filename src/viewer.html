@@ -31,6 +31,8 @@
   .filters select, .filters input { padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
   .filters select { min-width: 120px; }
   .filters input[type="search"] { min-width: 200px; }
+  .filters input[type="datetime-local"] { min-width: 170px; }
+  .filter-label { font-size: 11px; color: var(--text-muted); margin-right: -4px; }
   .controls { display: flex; gap: 8px; margin-left: auto; align-items: center; }
   .controls label { font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
 
@@ -94,9 +96,17 @@
     <select id="filter-host"><option value="">All hosts</option></select>
     <select id="filter-alertname"><option value="">All alerts</option></select>
     <select id="filter-threadname"><option value="">All threads</option></select>
+    <span class="filter-label">Logged after (local)</span>
+    <input type="datetime-local" id="filter-logged-after" step="1">
+    <span class="filter-label">Logged before (local)</span>
+    <input type="datetime-local" id="filter-logged-before" step="1">
     <input type="search" id="search-input" placeholder="Search loaded results...">
     <div class="controls">
       <label><input type="checkbox" id="auto-refresh"> Auto-refresh</label>
+      <select id="tz-toggle" style="min-width:auto;">
+        <option value="utc">UTC</option>
+        <option value="local" id="tz-local-option">Local</option>
+      </select>
       <button onclick="loadLogs()">Refresh</button>
     </div>
   </div>
@@ -126,6 +136,13 @@
   // When behind a reverse proxy that injects Authorization headers,
   // PROXY_AUTH is true and TOKEN stays empty (the proxy handles auth).
   let PROXY_AUTH = false;
+
+  // Timezone display state.
+  const USER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let USE_LOCAL_TZ = document.getElementById('tz-toggle').value === 'local';
+
+  // Set the Local option label to show the IANA zone ID.
+  document.getElementById('tz-local-option').textContent = 'Local (' + USER_TZ + ')';
 
   // Safe status message helper (uses textContent, not innerHTML).
   function showStatus(container, text) {
@@ -191,10 +208,30 @@
     if (host) params.set('host', host);
     if (alertname) params.set('alertname', alertname);
     if (threadname) params.set('threadname', threadname);
+
     params.set('limit', '200');
     if (cursor) params.set('before_cursor', cursor);
 
     try {
+      // Date range filters — convert datetime-local (browser local time) to ISO 8601.
+      // Validate before calling toISOString() to avoid a misleading "Connection error"
+      // from a RangeError if the input was programmatically set to a non-date string.
+      const loggedAfter = document.getElementById('filter-logged-after').value;
+      const loggedBefore = document.getElementById('filter-logged-before').value;
+      // datetime-local pickers always operate in browser local time — the
+      // picker UI shows and navigates local times regardless of display mode.
+      // Always interpret as local time so the filter matches what the picker shows.
+      if (loggedAfter) {
+        const d = new Date(loggedAfter);
+        if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged after" date'); return; }
+        params.set('logged_after', d.toISOString());
+      }
+      if (loggedBefore) {
+        const d = new Date(loggedBefore);
+        if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged before" date'); return; }
+        params.set('logged_before', d.toISOString());
+      }
+
       const fetchOpts = PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
       const resp = await fetch('/api/logs?' + params.toString(), fetchOpts);
 
@@ -514,10 +551,38 @@
     container.appendChild(div);
   }
 
+  // Stable YYYY-MM-DD HH:MM:SS formatter using formatToParts.
+  // UTC_FMT omits timeZoneName — formatTime appends ' Z' directly, because
+  // Intl's short name for UTC is locale-dependent ('GMT' in en-GB, 'UTC' in en-US).
+  const UTC_FMT = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  });
+  const LOCAL_FMT = new Intl.DateTimeFormat('en-GB', {
+    timeZone: USER_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    timeZoneName: 'short'
+  });
+
+  function partsToString(parts) {
+    const p = {};
+    let tzName = '';
+    for (const { type, value } of parts) {
+      if (type === 'timeZoneName') { tzName = value; continue; }
+      p[type] = value;
+    }
+    const date = p.year + '-' + p.month + '-' + p.day;
+    const time = p.hour + ':' + p.minute + ':' + p.second;
+    return date + ' ' + time + (tzName ? ' ' + tzName : '');
+  }
+
   function formatTime(iso) {
     if (!iso) return '';
     const d = new Date(iso);
-    return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    if (USE_LOCAL_TZ) {
+      return partsToString(LOCAL_FMT.formatToParts(d));
+    }
+    return partsToString(UTC_FMT.formatToParts(d)) + ' Z';
   }
 
   function formatDuration(ms) {
@@ -535,12 +600,21 @@
   });
 
   // Filter change handlers — reload from server
-  for (const id of ['filter-verdict', 'filter-host', 'filter-alertname', 'filter-threadname']) {
+  for (const id of ['filter-verdict', 'filter-host', 'filter-alertname', 'filter-threadname',
+                     'filter-logged-after', 'filter-logged-before']) {
     document.getElementById(id).addEventListener('change', function() {
       NEXT_CURSOR = null;
       loadLogs();
     });
   }
+
+  // Timezone toggle — re-render timestamps without refetching.
+  // Date filter inputs are always local time (the picker is inherently local),
+  // so changing the display timezone doesn't affect filter interpretation.
+  document.getElementById('tz-toggle').addEventListener('change', function() {
+    USE_LOCAL_TZ = this.value === 'local';
+    if (ALL_ENTRIES.length > 0) renderTable();
+  });
 
   // Auto-refresh toggle
   document.getElementById('auto-refresh').addEventListener('change', function() {

@@ -5,6 +5,7 @@ use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
@@ -25,6 +26,12 @@ pub(crate) struct LogsQuery {
     host: Option<String>,
     alertname: Option<String>,
     threadname: Option<String>,
+    /// Inclusive lower bound on `logged_at` (RFC 3339 with offset).
+    /// Entries with `logged_at >= logged_after` pass.
+    logged_after: Option<String>,
+    /// Exclusive upper bound on `logged_at` (RFC 3339 with offset).
+    /// Entries with `logged_at < logged_before` pass.
+    logged_before: Option<String>,
 }
 
 /// Validate the Bearer token from the Authorization header.
@@ -89,6 +96,36 @@ pub(crate) async fn api_logs(
         None => None,
     };
 
+    // Parse date range filters. Reject malformed dates with 400.
+    // Empty strings are treated as absent (same as omitting the parameter).
+    // Parse via FixedOffset to explicitly handle any RFC 3339 offset, then
+    // convert to Utc — avoids relying on undocumented DateTime<Utc>::FromStr
+    // behaviour for non-UTC offsets.
+    let logged_after: Option<DateTime<Utc>> = match &query.logged_after {
+        Some(s) if !s.is_empty() => Some(
+            s.parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|_| StatusCode::BAD_REQUEST)?,
+        ),
+        _ => None,
+    };
+    let logged_before: Option<DateTime<Utc>> = match &query.logged_before {
+        Some(s) if !s.is_empty() => Some(
+            s.parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|_| StatusCode::BAD_REQUEST)?,
+        ),
+        _ => None,
+    };
+
+    // Reject inverted ranges with 400. A zero-width interval [T, T) is valid
+    // (returns empty 200), consistent with other no-match filter combinations.
+    if let (Some(ref after), Some(ref before)) = (&logged_after, &logged_before) {
+        if after > before {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
     // Forward-scan the file, collecting all matching entries.
     let file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
@@ -151,6 +188,18 @@ pub(crate) async fn api_logs(
         // silently excluded from pagination.
         if let Some((ref cursor_ts, ref cursor_id)) = before {
             if (entry.logged_at, &entry.alert_id) >= (*cursor_ts, cursor_id) {
+                continue;
+            }
+        }
+
+        // Apply date range filters (half-open interval on logged_at).
+        if let Some(ref after) = logged_after {
+            if entry.logged_at < *after {
+                continue;
+            }
+        }
+        if let Some(ref before_ts) = logged_before {
+            if entry.logged_at >= *before_ts {
                 continue;
             }
         }
@@ -964,5 +1013,421 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Helper: create test entries with deterministic logged_at timestamps.
+    /// Returns entries at 20:00:00, 20:00:01, 20:00:02, 20:00:03 on 2025-06-15.
+    /// Uses the AppState's log_write_mutex so the lock is the same one the
+    /// running server would use.
+    async fn write_date_range_entries(state: &AppState) {
+        let log_path_str = state.log_file.as_deref().unwrap();
+        for i in 0u32..4 {
+            let mut entry = LogEntry::structured(
+                Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap(),
+                format!("Alert{}:host:ts", i),
+                format!("Alert{}", i),
+                if i < 2 {
+                    "bitcoin-03".into()
+                } else {
+                    "vps-dev-01".into()
+                },
+                String::new(),
+                "benign",
+                None,
+                format!("Summary {}", i),
+                "cause".into(),
+                "scope".into(),
+                vec!["e1".into()],
+                sample_telemetry(),
+            );
+            entry.logged_at = Utc.with_ymd_and_hms(2025, 6, 15, 20, 0, i).unwrap();
+            append_jsonl_log(log_path_str, &entry, &state.log_write_mutex).await;
+        }
+    }
+
+    fn make_test_state(log_path_str: String) -> Arc<AppState> {
+        Arc::new(AppState {
+            grafana_url: "http://localhost:3000".into(),
+            grafana_api_key: "test-key".into(),
+            claude_bin: "echo".into(),
+            claude_model: "claude-sonnet-4-6".into(),
+            mcp_config: "/dev/null".into(),
+            log_file: Some(log_path_str),
+            claude_timeout: std::time::Duration::from_secs(600),
+            http: reqwest::Client::new(),
+            rpc_client: None,
+            investigation_semaphore: tokio::sync::Semaphore::new(4),
+            cooldown: std::time::Duration::ZERO,
+            cooldown_map: std::sync::Mutex::new(std::collections::HashMap::new()),
+            viewer_auth_token: Some("token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    fn parse_ndjson_body(body_bytes: &[u8]) -> Vec<LogEntry> {
+        let body_str = std::str::from_utf8(body_bytes).unwrap();
+        body_str
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_logged_after_only() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-dr-after-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-after.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // logged_after=20:00:02 — should include entries at :02 and :03 (inclusive lower bound)
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-15T20:00:02Z")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(entries.len(), 2);
+        // Newest first
+        assert_eq!(entries[0].alertname, "Alert3");
+        assert_eq!(entries[1].alertname, "Alert2");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_logged_before_only() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-dr-before-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-before.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // logged_before=20:00:02 — should include entries at :00 and :01 (exclusive upper bound)
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_before=2025-06-15T20:00:02Z")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].alertname, "Alert1");
+        assert_eq!(entries[1].alertname, "Alert0");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_combined() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-dr-combined-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-combined.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // Half-open [20:00:01, 20:00:03) — should include entries at :01 and :02
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-15T20:00:01Z&logged_before=2025-06-15T20:00:03Z")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].alertname, "Alert2");
+        assert_eq!(entries[1].alertname, "Alert1");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_boundary_semantics() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-dr-boundary-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-boundary.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // Exact boundary: logged_after == logged_at of entry at :01 (inclusive, should match)
+        // and logged_before == logged_at of entry at :02 (exclusive, should NOT match)
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-15T20:00:01Z&logged_before=2025-06-15T20:00:02Z")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        // Only the entry at exactly :01 should be included
+        assert_eq!(
+            entries.len(),
+            1,
+            "half-open [01, 02) should include only :01"
+        );
+        assert_eq!(entries[0].alertname, "Alert1");
+
+        // Zero-width interval [T, T) — should return empty 200, not 400
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-15T20:00:01Z&logged_before=2025-06-15T20:00:01Z")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(entries.len(), 0, "zero-width [T, T) should return empty");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_rejects_malformed() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use tower::ServiceExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("peer-observer-test-dr-bad-{}", std::process::id()));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-bad.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+
+        let entry = sample_structured_entry();
+        let test_mutex = tokio::sync::Mutex::new(());
+        append_jsonl_log(&log_path_str, &entry, &test_mutex).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(make_test_state(log_path_str));
+
+        // Malformed logged_after
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=not-a-date")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Malformed logged_before
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_before=2025-13-99")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_with_pagination_and_filters() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-dr-combo-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-combo.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        // Entries: Alert0/bitcoin-03@:00, Alert1/bitcoin-03@:01,
+        //          Alert2/vps-dev-01@:02, Alert3/vps-dev-01@:03
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // Date range [20:00:00, 20:00:03) + host=bitcoin-03 + limit=1 for pagination
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-15T20:00:00Z&logged_before=2025-06-15T20:00:03Z&host=bitcoin-03&limit=1")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cursor = resp
+            .headers()
+            .get("x-next-cursor")
+            .expect("should have cursor")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let p1 = parse_ndjson_body(&body);
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0].alertname, "Alert1"); // newest bitcoin-03 in range
+
+        // Page 2 with cursor
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/logs?logged_after=2025-06-15T20:00:00Z&logged_before=2025-06-15T20:00:03Z&host=bitcoin-03&limit=1&before_cursor={}", cursor))
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().get("x-next-cursor").is_none(),
+            "no more pages"
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let p2 = parse_ndjson_body(&body);
+        assert_eq!(p2.len(), 1);
+        assert_eq!(p2[0].alertname, "Alert0");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn api_logs_date_range_accepts_rfc3339_with_offset() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-dr-offset-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("dr-offset.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        // Entries at 20:00:00Z .. 20:00:03Z
+        let state = make_test_state(log_path_str);
+        write_date_range_entries(&state).await;
+
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        // logged_after with +08:00 offset: 2025-06-16T04:00:01+08:00 == 2025-06-15T20:00:01Z
+        // logged_before with +08:00 offset: 2025-06-16T04:00:03+08:00 == 2025-06-15T20:00:03Z
+        // Half-open [20:00:01Z, 20:00:03Z) should return entries at :01 and :02
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs?logged_after=2025-06-16T04:00:01%2B08:00&logged_before=2025-06-16T04:00:03%2B08:00")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].alertname, "Alert2");
+        assert_eq!(entries[1].alertname, "Alert1");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
     }
 }
