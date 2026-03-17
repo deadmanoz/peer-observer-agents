@@ -343,17 +343,18 @@ pub(crate) struct RawFallbackResult {
 pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
     // First check the raw text directly.
     let matched = contains_peer_intervention(raw);
-    // Also check a JSON-unescaped version to catch \uXXXX-encoded commands.
-    // serde_json::from_str on a JSON string literal resolves Unicode escapes.
+    // Also check a version with \uXXXX sequences decoded, to catch
+    // Unicode-escaped prohibited commands. Uses a direct decoder instead
+    // of JSON parsing to avoid failures from control chars or invalid escapes.
     let matched = matched.or_else(|| {
         if !raw.contains("\\u") {
             return None;
         }
-        // Wrap in quotes to make it a valid JSON string, then deserialize.
-        let json_str = format!("\"{}\"", raw.replace('"', "\\\""));
-        serde_json::from_str::<String>(&json_str)
-            .ok()
-            .and_then(|decoded| contains_peer_intervention(&decoded))
+        let decoded = decode_unicode_escapes(raw);
+        if decoded == raw {
+            return None; // No escapes were actually resolved
+        }
+        contains_peer_intervention(&decoded)
     });
     if let Some(pattern) = matched {
         let stub = "Investigation output contained a prohibited peer-intervention \
@@ -372,6 +373,39 @@ pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
             matched_pattern: None,
         }
     }
+}
+
+/// Decode `\uXXXX` escape sequences in a string, leaving all other content
+/// (including invalid escapes, control chars, etc.) unchanged. This avoids
+/// the fragility of JSON-wrapping the string for decoding.
+fn decode_unicode_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if chars.peek() == Some(&'u') {
+                chars.next(); // consume 'u'
+                let hex: String = chars.by_ref().take(4).collect();
+                if hex.len() == 4 {
+                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                        if let Some(decoded) = char::from_u32(code) {
+                            out.push(decoded);
+                            continue;
+                        }
+                    }
+                }
+                // Not a valid \uXXXX — emit literally
+                out.push('\\');
+                out.push('u');
+                out.push_str(&hex);
+            } else {
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Escape text for safe inclusion in HTML annotation content.
@@ -1018,14 +1052,21 @@ mod tests {
 
     #[test]
     fn raw_fallback_redacts_unicode_escaped_prohibited_text() {
-        // JSON Unicode escapes for "d" = \u0064, so "disconnectnode" is
-        // "\u0064isconnectnode". The raw text contains literal backslash-u.
-        let result = sanitize_raw_fallback(
-            "You should run bitcoin-cli \\u0064isconnectnode 1.2.3.4:8333",
-        );
-        // The \u escape decodes "d" which makes "disconnectnode" — should be caught
+        // \u0064 = "d", so "\u0064isconnectnode" decodes to "disconnectnode"
+        let result =
+            sanitize_raw_fallback("You should run bitcoin-cli \\u0064isconnectnode 1.2.3.4:8333");
         assert!(result.policy_violated);
         assert!(result.matched_pattern.is_some());
+    }
+
+    #[test]
+    fn raw_fallback_redacts_unicode_escape_with_newlines() {
+        // Multi-line output with Unicode escape — must not be bypassed by
+        // the presence of control characters in the raw text.
+        let result = sanitize_raw_fallback(
+            "The analysis is complete.\nRun bitcoin-cli \\u0064isconnectnode 1.2.3.4 to fix.",
+        );
+        assert!(result.policy_violated);
     }
 
     #[test]
