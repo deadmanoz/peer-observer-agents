@@ -166,11 +166,21 @@ fn check_peer_intervention_policy(ann: &StructuredAnnotation) -> Result<()> {
     .chain(ann.evidence.iter().map(|e| e.as_str()));
 
     for field_text in all_text_fields {
-        if let Some(pattern) = contains_peer_intervention(field_text) {
-            anyhow::bail!(
-                "annotation contains {POLICY_ERROR_MARKER} command ({pattern}); \
-                 these are research/monitoring nodes — peer intervention is not permitted"
-            );
+        // Check the deserialized text and also a decoded version to catch
+        // double-escaped Unicode (\\uXXXX → \uXXXX after serde, then decoded here).
+        let decoded = decode_unicode_escapes(field_text);
+        let texts_to_check: &[&str] = if decoded != field_text {
+            &[field_text, &decoded]
+        } else {
+            &[field_text]
+        };
+        for text in texts_to_check {
+            if let Some(pattern) = contains_peer_intervention(text) {
+                anyhow::bail!(
+                    "annotation contains {POLICY_ERROR_MARKER} command ({pattern}); \
+                     these are research/monitoring nodes — peer intervention is not permitted"
+                );
+            }
         }
     }
 

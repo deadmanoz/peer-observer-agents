@@ -342,6 +342,13 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
                 error = %msg,
                 "structured annotation rejected by peer-intervention policy"
             );
+            // Log full original output for forensic audit — only to tracing,
+            // never persisted in Grafana or the /logs viewer.
+            warn!(
+                alert_id = %aid,
+                raw_output = %claude_output.result,
+                "original output for policy violation (not posted to Grafana)"
+            );
             let stub = "Investigation output contained a prohibited peer-intervention \
                         command. Original text redacted.";
             post_grafana_annotation(
@@ -365,7 +372,8 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
             if fallback.policy_violated {
                 warn!(
                     alert_id = %aid,
-                    pattern = fallback.matched_pattern.unwrap_or("unknown"),
+                    pattern = fallback.matched_pattern
+                        .expect("matched_pattern must be Some when policy_violated"),
                     "raw annotation redacted: peer-intervention command detected"
                 );
             }
