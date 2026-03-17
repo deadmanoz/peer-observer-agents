@@ -96,9 +96,9 @@
     <select id="filter-host"><option value="">All hosts</option></select>
     <select id="filter-alertname"><option value="">All alerts</option></select>
     <select id="filter-threadname"><option value="">All threads</option></select>
-    <span class="filter-label" id="label-logged-after">Logged after (UTC)</span>
+    <span class="filter-label">Logged after (local)</span>
     <input type="datetime-local" id="filter-logged-after" step="1">
-    <span class="filter-label" id="label-logged-before">Logged before (UTC)</span>
+    <span class="filter-label">Logged before (local)</span>
     <input type="datetime-local" id="filter-logged-before" step="1">
     <input type="search" id="search-input" placeholder="Search loaded results...">
     <div class="controls">
@@ -143,11 +143,6 @@
 
   // Set the Local option label to show the IANA zone ID.
   document.getElementById('tz-local-option').textContent = 'Local (' + USER_TZ + ')';
-
-  // Defensive init: sync date filter labels in case the HTML default drifts from the JS default.
-  const initTzLabel = USE_LOCAL_TZ ? 'local' : 'UTC';
-  document.getElementById('label-logged-after').textContent = 'Logged after (' + initTzLabel + ')';
-  document.getElementById('label-logged-before').textContent = 'Logged before (' + initTzLabel + ')';
 
   // Safe status message helper (uses textContent, not innerHTML).
   function showStatus(container, text) {
@@ -223,13 +218,16 @@
       // from a RangeError if the input was programmatically set to a non-date string.
       const loggedAfter = document.getElementById('filter-logged-after').value;
       const loggedBefore = document.getElementById('filter-logged-before').value;
+      // datetime-local pickers always operate in browser local time — the
+      // picker UI shows and navigates local times regardless of display mode.
+      // Always interpret as local time so the filter matches what the picker shows.
       if (loggedAfter) {
-        const d = USE_LOCAL_TZ ? new Date(loggedAfter) : new Date(loggedAfter + 'Z');
+        const d = new Date(loggedAfter);
         if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged after" date'); return; }
         params.set('logged_after', d.toISOString());
       }
       if (loggedBefore) {
-        const d = USE_LOCAL_TZ ? new Date(loggedBefore) : new Date(loggedBefore + 'Z');
+        const d = new Date(loggedBefore);
         if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged before" date'); return; }
         params.set('logged_before', d.toISOString());
       }
@@ -610,26 +608,12 @@
     });
   }
 
-  // Timezone toggle — update labels, refetch if date filters are active (since the
-  // interpretation of their values changes), otherwise just re-render.
+  // Timezone toggle — re-render timestamps without refetching.
+  // Date filter inputs are always local time (the picker is inherently local),
+  // so changing the display timezone doesn't affect filter interpretation.
   document.getElementById('tz-toggle').addEventListener('change', function() {
     USE_LOCAL_TZ = this.value === 'local';
-    const tzLabel = USE_LOCAL_TZ ? 'local' : 'UTC';
-    document.getElementById('label-logged-after').textContent = 'Logged after (' + tzLabel + ')';
-    document.getElementById('label-logged-before').textContent = 'Logged before (' + tzLabel + ')';
-    // Clear date inputs on toggle change — the same wall-clock digits would map
-    // to a different absolute time under the new interpretation, which is confusing.
-    const afterEl = document.getElementById('filter-logged-after');
-    const beforeEl = document.getElementById('filter-logged-before');
-    const hadDateFilter = afterEl.value || beforeEl.value;
-    afterEl.value = '';
-    beforeEl.value = '';
-    if (hadDateFilter) {
-      NEXT_CURSOR = null;
-      loadLogs();
-    } else if (ALL_ENTRIES.length > 0) {
-      renderTable();
-    }
+    if (ALL_ENTRIES.length > 0) renderTable();
   });
 
   // Auto-refresh toggle
