@@ -139,7 +139,7 @@
 
   // Timezone display state.
   const USER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  let USE_LOCAL_TZ = false;
+  let USE_LOCAL_TZ = document.getElementById('tz-toggle').value === 'local';
 
   // Set the Local option label to show the IANA zone ID.
   document.getElementById('tz-local-option').textContent = 'Local (' + USER_TZ + ')';
@@ -214,12 +214,20 @@
 
     try {
       // Date range filters — convert datetime-local (browser local time) to ISO 8601.
-      // Inside the try block so a malformed date (e.g. from programmatic mutation)
-      // falls through to the catch handler instead of leaving the UI stuck.
+      // Validate before calling toISOString() to avoid a misleading "Connection error"
+      // from a RangeError if the input was programmatically set to a non-date string.
       const loggedAfter = document.getElementById('filter-logged-after').value;
       const loggedBefore = document.getElementById('filter-logged-before').value;
-      if (loggedAfter) params.set('logged_after', new Date(loggedAfter).toISOString());
-      if (loggedBefore) params.set('logged_before', new Date(loggedBefore).toISOString());
+      if (loggedAfter) {
+        const d = new Date(loggedAfter);
+        if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged after" date'); return; }
+        params.set('logged_after', d.toISOString());
+      }
+      if (loggedBefore) {
+        const d = new Date(loggedBefore);
+        if (isNaN(d.getTime())) { showStatus(content, 'Invalid "logged before" date'); return; }
+        params.set('logged_before', d.toISOString());
+      }
 
       const fetchOpts = PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
       const resp = await fetch('/api/logs?' + params.toString(), fetchOpts);

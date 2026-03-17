@@ -1050,7 +1050,8 @@ mod tests {
         })
     }
 
-    fn parse_ndjson_body(body_str: &str) -> Vec<LogEntry> {
+    fn parse_ndjson_body(body_bytes: &[u8]) -> Vec<LogEntry> {
+        let body_str = std::str::from_utf8(body_bytes).unwrap();
         body_str
             .lines()
             .filter(|l| !l.is_empty())
@@ -1092,7 +1093,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let entries = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let entries = parse_ndjson_body(&body);
         assert_eq!(entries.len(), 2);
         // Newest first
         assert_eq!(entries[0].alertname, "Alert3");
@@ -1136,7 +1137,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let entries = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let entries = parse_ndjson_body(&body);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].alertname, "Alert1");
         assert_eq!(entries[1].alertname, "Alert0");
@@ -1179,7 +1180,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let entries = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let entries = parse_ndjson_body(&body);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].alertname, "Alert2");
         assert_eq!(entries[1].alertname, "Alert1");
@@ -1223,7 +1224,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let entries = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let entries = parse_ndjson_body(&body);
         // Only the entry at exactly :01 should be included
         assert_eq!(
             entries.len(),
@@ -1327,7 +1328,7 @@ mod tests {
             .unwrap()
             .to_string();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let p1 = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let p1 = parse_ndjson_body(&body);
         assert_eq!(p1.len(), 1);
         assert_eq!(p1[0].alertname, "Alert1"); // newest bitcoin-03 in range
 
@@ -1345,7 +1346,7 @@ mod tests {
             "no more pages"
         );
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let p2 = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let p2 = parse_ndjson_body(&body);
         assert_eq!(p2.len(), 1);
         assert_eq!(p2[0].alertname, "Alert0");
 
@@ -1390,7 +1391,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let entries = parse_ndjson_body(&String::from_utf8(body.to_vec()).unwrap());
+        let entries = parse_ndjson_body(&body);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].alertname, "Alert2");
         assert_eq!(entries[1].alertname, "Alert1");
