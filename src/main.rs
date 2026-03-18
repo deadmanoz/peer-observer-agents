@@ -392,7 +392,11 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
                 &telemetry,
             )
             .await;
-            info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
+            if fallback.policy_violated {
+                info!(alert_id = %aid, "annotation posted (policy violation stub)");
+            } else {
+                info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
+            }
         }
     }
 
