@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-03-18
+
+### Added
+
+- Track `software_version` (peer-observer-agent crate version) in annotation log entries and display in both log viewer and peer profiles viewer UIs
+
+### Fixed
+
+- Add peer-intervention policy guard to investigation prompts — Claude must recommend operator action rather than executing changes directly
+- Remove priming language from investigation instructions that could bias Claude toward specific conclusions
+
+## [0.6.0] - 2026-03-17
+
 ### Added
 
 - Add peer profiles component: continuously polls `getpeerinfo` from configured Bitcoin Core nodes and builds persistent per-peer profiles in SQLite. Tracks peer identities, connection observations, software version changes, and presence windows across hosts. New `/peers` viewer and `/api/peers/*` API endpoints with bearer auth. Configurable via `ANNOTATION_AGENT_PROFILES_DB`, `ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS`, and `ANNOTATION_AGENT_PROFILES_RETENTION_DAYS`.
@@ -113,7 +126,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow: fmt, clippy, test, nix build
 - Comprehensive documentation (deployment, testing, telemetry)
 
-[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/peer-observer/peer-observer-agents/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/peer-observer/peer-observer-agents/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/peer-observer/peer-observer-agents/compare/v0.5.0...v0.5.1
