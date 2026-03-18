@@ -149,6 +149,12 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
 /// text to prevent test drift.
 const POLICY_ERROR_MARKER: &str = "peer-intervention";
 
+/// Stub text used when an annotation is redacted for policy violation.
+/// Shared between `sanitize_raw_fallback` and `main.rs` to prevent drift.
+pub(crate) const POLICY_VIOLATION_STUB: &str =
+    "Investigation output contained a prohibited peer-intervention \
+     command. Original text redacted.";
+
 /// Check content policy: reject annotations containing peer-intervention commands.
 ///
 /// Separated from `validate_structured_annotation` so that `extract_json_object`
@@ -440,11 +446,9 @@ pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
         contains_peer_intervention(&decoded)
     });
     if let Some(pattern) = matched {
-        let stub = "Investigation output contained a prohibited peer-intervention \
-                     command. Original text redacted.";
         RawFallbackResult {
-            grafana_body: format!("<b>POLICY VIOLATION:</b> {stub}"),
-            log_text: stub.to_string(),
+            grafana_body: format!("<b>POLICY VIOLATION:</b> {POLICY_VIOLATION_STUB}"),
+            log_text: POLICY_VIOLATION_STUB.to_string(),
             policy_violated: true,
             matched_pattern: Some(pattern),
         }
@@ -479,8 +483,12 @@ fn decode_unicode_escapes(s: &str) -> String {
                         continue;
                     }
                 }
-                // Valid hex but invalid codepoint (surrogate) — emit nothing
-                // so adjacent characters remain contiguous for substring matching.
+                // Valid hex but invalid codepoint (surrogate) — emit space.
+                // `contains_peer_intervention` collapses whitespace runs via
+                // split_ascii_whitespace, so this handles both within-word
+                // (disc\uD800onnectnode → "disc onnectnode" → collapsed → matched)
+                // and between-word (ban\uD800peer → "ban peer" → matched) cases.
+                out.push(' ');
                 i += 6;
                 continue;
             }

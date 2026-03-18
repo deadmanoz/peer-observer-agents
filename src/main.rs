@@ -12,6 +12,7 @@ mod viewer;
 
 use crate::annotation::{
     parse_structured_annotation, render_annotation_html, sanitize_raw_fallback, AnnotationError,
+    POLICY_VIOLATION_STUB,
 };
 use crate::cooldown::{try_claim_cooldown, CooldownKey, SuppressReason, DEFAULT_COOLDOWN_SECS};
 use crate::correlation::AlertId;
@@ -349,17 +350,23 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
                 raw_output = %claude_output.result,
                 "original output for policy violation (not posted to Grafana)"
             );
-            let stub = "Investigation output contained a prohibited peer-intervention \
-                        command. Original text redacted.";
             post_grafana_annotation(
                 state,
                 alert,
                 aid,
-                &format!("<b>POLICY VIOLATION:</b> {stub}"),
+                &format!("<b>POLICY VIOLATION:</b> {POLICY_VIOLATION_STUB}"),
                 None,
             )
             .await?;
-            append_log(state, alert, aid, None, Some(stub), &telemetry).await;
+            append_log(
+                state,
+                alert,
+                aid,
+                None,
+                Some(POLICY_VIOLATION_STUB),
+                &telemetry,
+            )
+            .await;
             info!(alert_id = %aid, "annotation posted (policy violation stub)");
         }
         Err(AnnotationError::ParseError(e)) => {
