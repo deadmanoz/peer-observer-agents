@@ -44,11 +44,19 @@ impl From<&ClaudeOutput> for Telemetry {
     }
 }
 
+/// Default value for `agent_version` when deserializing old entries that lack the field.
+fn unknown_agent_version() -> String {
+    "unknown".to_string()
+}
+
 /// A single JSONL log entry written after each successful annotation post.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LogEntry {
     /// Schema version (always 1 for now).
     pub(crate) v: u8,
+    /// Version of peer-observer-agents that produced this entry.
+    #[serde(default = "unknown_agent_version")]
+    pub(crate) agent_version: String,
     /// Wall-clock time when this entry was appended to the log.
     /// Used for newest-first ordering and cursor pagination.
     pub(crate) logged_at: DateTime<Utc>,
@@ -99,6 +107,7 @@ impl LogEntry {
     ) -> Self {
         Self {
             v: SCHEMA_VERSION,
+            agent_version: env!("CARGO_PKG_VERSION").to_string(),
             logged_at: Utc::now(),
             alert_starts_at,
             alert_id,
@@ -129,6 +138,7 @@ impl LogEntry {
     ) -> Self {
         Self {
             v: SCHEMA_VERSION,
+            agent_version: env!("CARGO_PKG_VERSION").to_string(),
             logged_at: Utc::now(),
             alert_starts_at,
             alert_id,
@@ -204,6 +214,7 @@ pub(crate) mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: LogEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.v, 1);
+        assert_eq!(parsed.agent_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(parsed.entry_kind, EntryKind::Structured);
         assert_eq!(parsed.verdict.as_deref(), Some("benign"));
         assert_eq!(parsed.alertname, "PeerObserverBlockStale");
@@ -220,6 +231,7 @@ pub(crate) mod tests {
         let entry = sample_raw_fallback_entry();
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: LogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.agent_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(parsed.entry_kind, EntryKind::RawFallback);
         assert!(parsed.verdict.is_none());
         assert!(parsed.summary.is_none());
@@ -228,6 +240,38 @@ pub(crate) mod tests {
             parsed.raw_text.as_deref(),
             Some("Claude output that failed to parse as structured JSON.")
         );
+    }
+
+    #[test]
+    fn legacy_entry_without_agent_version_defaults_to_unknown() {
+        // Simulate a pre-version log entry (no agent_version field).
+        let json = r#"{
+            "v": 1,
+            "logged_at": "2025-06-15T12:00:00Z",
+            "alert_starts_at": "2025-06-15T12:00:00Z",
+            "alert_id": "TestAlert:host:20250615T120000Z",
+            "alertname": "TestAlert",
+            "host": "bitcoin-03",
+            "threadname": "",
+            "entry_kind": "structured",
+            "verdict": "benign",
+            "summary": "All good.",
+            "cause": "Normal.",
+            "scope": "single-host",
+            "evidence": ["e1"],
+            "telemetry": {
+                "num_turns": 5,
+                "duration_ms": 10000,
+                "duration_api_ms": 8000,
+                "cost_usd": 0.02,
+                "input_tokens": 5000,
+                "output_tokens": 1000,
+                "stop_reason": "end_turn",
+                "session_id": "legacy-session"
+            }
+        }"#;
+        let parsed: LogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.agent_version, "unknown");
     }
 
     #[test]
