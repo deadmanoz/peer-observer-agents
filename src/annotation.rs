@@ -287,6 +287,9 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
     "disconnecting the peer",
     "disconnecting peer",
     "disconnecting peers",
+    "disconnecting from the peer",
+    "disconnecting from peer",
+    "disconnecting from peers",
     "disconnect and ban",
     "ban the peer",
     "ban that peer",
@@ -328,6 +331,9 @@ const ZERO_WIDTH_CHARS: &[char] = &[
 /// - Unicode homoglyph/confusable characters (e.g., Cyrillic `а` for Latin `a`)
 ///   are not normalized. This is accepted because Claude does not output confusable
 ///   characters in practice — the prompt rewrite is the primary defense.
+/// - Negated forms ("we should not ban peers") will trigger the guard. This is
+///   accepted — the cost of occasionally redacting a valid annotation that restates
+///   the no-intervention policy is lower than the cost of missing a real violation.
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let normalized: String = text
         .chars()
@@ -400,6 +406,18 @@ pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
         if decoded == raw {
             return None; // No escapes were actually resolved
         }
+        // Re-decode once if the first pass introduced a new \uXXXX sequence
+        // (e.g. \u005Cu0064 → \u0064 → d, catching nested encoding).
+        let decoded = if decoded.contains("\\u") {
+            let d2 = decode_unicode_escapes(&decoded);
+            if d2 != decoded {
+                d2
+            } else {
+                decoded
+            }
+        } else {
+            decoded
+        };
         contains_peer_intervention(&decoded)
     });
     if let Some(pattern) = matched {
