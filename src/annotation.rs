@@ -351,6 +351,8 @@ const ZERO_WIDTH_CHARS: &[char] = &[
 /// - Negated forms ("we should not ban peers") will trigger the guard. This is
 ///   accepted — the cost of occasionally redacting a valid annotation that restates
 ///   the no-intervention policy is lower than the cost of missing a real violation.
+/// - Hyphen-split command names ("set-ban", "dis-connectnode") are not matched.
+///   Claude does not produce hyphenated RPC names in practice.
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let normalized: String = text
         .chars()
@@ -477,9 +479,8 @@ fn decode_unicode_escapes(s: &str) -> String {
                         continue;
                     }
                 }
-                // Valid hex but invalid codepoint (surrogate) — emit space
-                // placeholder so hex digits don't defeat word-boundary checks.
-                out.push(' ');
+                // Valid hex but invalid codepoint (surrogate) — emit nothing
+                // so adjacent characters remain contiguous for substring matching.
                 i += 6;
                 continue;
             }
