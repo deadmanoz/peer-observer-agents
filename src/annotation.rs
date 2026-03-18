@@ -334,6 +334,9 @@ pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
         .filter(|c| !ZERO_WIDTH_CHARS.contains(c))
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect::<String>()
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .to_ascii_lowercase();
     PEER_INTERVENTION_PATTERNS
         .iter()
@@ -1030,6 +1033,9 @@ mod tests {
             contains_peer_intervention("do not ban peer-to-peer addr relay from this subnet")
                 .is_none()
         );
+        // multi-space runs must not evade multi-word patterns
+        assert!(contains_peer_intervention("ban  peer sending spam").is_some());
+        assert!(contains_peer_intervention("disconnect\t\tthe peer").is_some());
     }
 
     // ── Peer-intervention policy (structured path) ────────────────────
