@@ -128,7 +128,7 @@ FIELD RULES:
   - "benign" = definitively not a problem, no monitoring needed.
   - "investigate" = not immediately actionable but warrants monitoring or follow-up.
   - "action_required" = operator must do something specific RIGHT NOW.
-- action: A specific operator step. MUST be null when verdict is "benign". MUST be a non-empty string when verdict is "action_required" (e.g., "check getpeerinfo on vps-prod-01 and identify peers with addr_rate_limited>0"). Optional for "investigate" (e.g., "monitor for 15 minutes, escalate if rate exceeds 35/s"). IMPORTANT: These are research/monitoring nodes — NEVER recommend disconnecting or banning peers. The goal is to observe and document network behavior, not intervene.
+- action: A specific operator step. MUST be null when verdict is "benign". MUST be a non-empty string when verdict is "action_required" (e.g., "run getpeerinfo on vps-prod-01 and document peers with addr_rate_limited>0"). Optional for "investigate" (e.g., "operator should review getpeerinfo for peers with elevated addr byte volumes and document findings"). IMPORTANT: These are research/monitoring nodes — NEVER include disconnectnode, setban, or any peer intervention commands in your output. Do NOT recommend disconnecting, banning, or otherwise intervening with peers. The goal is to observe and document network behavior. For peer behavior issues, use verdict "investigate" and document what was observed. Reserve "action_required" for non-peer operator actions (node restart, disk cleanup, service recovery).
 - summary: Aim for 1-2 sentences. MUST include the key metric value and threshold. If prior annotations exist for related events, reference them here (e.g., "continuation of addr spike incident first seen at 22:55 UTC").
 - cause: The identified or likely root cause with supporting evidence. Be SPECIFIC: name peer IPs if identified, quote exact metric values, state the mechanism.
 - scope: Whether the alert is isolated or multi-host. Name the hosts checked and their status (e.g., "isolated to vps-prod-01 (vps-dev-01: 3.79/s normal, bitcoin-01: 0.31/s normal)").
@@ -360,6 +360,29 @@ mod tests {
         let prompt = build_investigation_prompt(&default_ctx());
         assert!(prompt.contains("\"RPC Data\""));
         assert!(prompt.contains("Bitcoin Core RPC"));
+    }
+
+    #[test]
+    fn output_rules_contain_peer_intervention_prohibition() {
+        let prompt = build_investigation_prompt(&default_ctx());
+        assert!(prompt.contains("NEVER include disconnectnode"));
+        assert!(prompt.contains("Do NOT recommend disconnecting"));
+    }
+
+    #[test]
+    fn output_rules_have_no_literal_backslashes() {
+        let prompt = build_investigation_prompt(&default_ctx());
+        // The action field rule is inside a raw string — backslash continuations
+        // would be literal. Verify no stray backslashes appear in Output Rules.
+        let rules_section = prompt
+            .split("## Output Rules")
+            .nth(1)
+            .expect("Output Rules section must exist");
+        assert!(
+            !rules_section.contains('\\'),
+            "Output Rules section contains literal backslash — \
+             likely a raw-string line continuation bug"
+        );
     }
 
     #[test]

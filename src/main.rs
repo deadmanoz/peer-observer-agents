@@ -10,7 +10,10 @@ mod state;
 mod types;
 mod viewer;
 
-use crate::annotation::{html_escape, parse_structured_annotation, render_annotation_html};
+use crate::annotation::{
+    parse_structured_annotation, render_annotation_html, sanitize_raw_fallback, AnnotationError,
+    POLICY_VIOLATION_STUB,
+};
 use crate::cooldown::{try_claim_cooldown, CooldownKey, SuppressReason, DEFAULT_COOLDOWN_SECS};
 use crate::correlation::AlertId;
 use crate::grafana::post_grafana_annotation;
@@ -331,24 +334,76 @@ async fn process_alert(state: &AppState, alert: &types::Alert, aid: &AlertId) ->
             append_log(state, alert, aid, Some(&ann), None, &telemetry).await;
             info!(alert_id = %aid, verdict = %ann.verdict, "annotation posted successfully");
         }
-        Err(e) => {
+        Err(AnnotationError::PolicyViolation(msg)) => {
+            // Structured path detected a policy violation (e.g., via deserialized
+            // fields that resolved JSON Unicode escapes). Force redaction regardless
+            // of whether the raw scan also catches it.
             warn!(
                 alert_id = %aid,
-                error = %e,
-                "failed to parse structured annotation, using raw text"
+                error = %msg,
+                "structured annotation rejected by peer-intervention policy"
             );
-            let escaped = html_escape(&claude_output.result);
-            post_grafana_annotation(state, alert, aid, &escaped, None).await?;
+            // Log full original output for forensic audit — only to tracing,
+            // never persisted in Grafana or the /logs viewer.
+            warn!(
+                alert_id = %aid,
+                raw_output = %claude_output.result,
+                "original output for policy violation (not posted to Grafana)"
+            );
+            post_grafana_annotation(
+                state,
+                alert,
+                aid,
+                &format!("<b>POLICY VIOLATION:</b> {POLICY_VIOLATION_STUB}"),
+                None,
+            )
+            .await?;
             append_log(
                 state,
                 alert,
                 aid,
                 None,
-                Some(&claude_output.result),
+                Some(POLICY_VIOLATION_STUB),
                 &telemetry,
             )
             .await;
-            info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
+            info!(alert_id = %aid, "annotation posted (policy violation stub)");
+        }
+        Err(AnnotationError::ParseError(e)) => {
+            warn!(
+                alert_id = %aid,
+                error = %e,
+                "failed to parse structured annotation, using raw text"
+            );
+            let fallback = sanitize_raw_fallback(&claude_output.result);
+            if fallback.policy_violated {
+                warn!(
+                    alert_id = %aid,
+                    pattern = fallback.matched_pattern.unwrap_or("unknown"),
+                    "raw annotation redacted: peer-intervention command detected"
+                );
+                // Forensic audit — mirrors the structured PolicyViolation path.
+                warn!(
+                    alert_id = %aid,
+                    raw_output = %claude_output.result,
+                    "original output for policy violation (not posted to Grafana)"
+                );
+            }
+            post_grafana_annotation(state, alert, aid, &fallback.grafana_body, None).await?;
+            append_log(
+                state,
+                alert,
+                aid,
+                None,
+                Some(&fallback.log_text),
+                &telemetry,
+            )
+            .await;
+            if fallback.policy_violated {
+                info!(alert_id = %aid, "annotation posted (policy violation stub)");
+            } else {
+                info!(alert_id = %aid, "annotation posted successfully (raw fallback)");
+            }
         }
     }
 

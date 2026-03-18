@@ -2,6 +2,28 @@ use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use std::fmt;
 
+/// Error from `parse_structured_annotation` — distinguishes policy violations
+/// from structural/format failures so callers can route logging correctly.
+#[derive(Debug)]
+pub(crate) enum AnnotationError {
+    /// The JSON was parsed and structurally valid, but contained a prohibited
+    /// peer-intervention command.
+    PolicyViolation(String),
+    /// JSON parsing or structural validation failed.
+    ParseError(anyhow::Error),
+}
+
+impl fmt::Display for AnnotationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AnnotationError::PolicyViolation(msg) => write!(f, "{msg}"),
+            AnnotationError::ParseError(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for AnnotationError {}
+
 /// Investigation verdict indicating whether operator action is needed.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,7 +64,8 @@ impl fmt::Display for Verdict {
 pub(crate) struct StructuredAnnotation {
     pub(crate) verdict: Verdict,
     /// Specific operator action. Required for `action_required`, optional for
-    /// `investigate` (e.g., "monitor for 15 minutes"), must be absent for `benign`.
+    /// `investigate` (e.g., "operator should review getpeerinfo for peers with elevated addr volumes"),
+    /// must be absent for `benign`.
     #[serde(default)]
     pub(crate) action: Option<String>,
     /// 1-2 sentence TL;DR with key metric values.
@@ -55,7 +78,12 @@ pub(crate) struct StructuredAnnotation {
     pub(crate) evidence: Vec<String>,
 }
 
-/// Validate a structured annotation against the schema contract.
+/// Validate a structured annotation against the schema contract (structure only).
+///
+/// This checks field presence, emptiness, evidence count, and verdict-action
+/// consistency. It does NOT check content policy (peer-intervention commands).
+/// Called by `extract_json_object` as a filter (to skip incidental JSON objects
+/// in preamble) and by `parse_structured_annotation` as a hard validation gate.
 fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
     ensure!(
         !ann.summary.trim().is_empty(),
@@ -114,12 +142,80 @@ fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
     Ok(())
 }
 
+/// Discriminating substring in policy-violation error messages. Used in
+/// `check_peer_intervention_policy`'s bail message and in tests to avoid
+/// hardcoding the error text. Callers in `main.rs` now use the typed
+/// `AnnotationError` enum — this constant centralises the error-message
+/// text to prevent test drift.
+const POLICY_ERROR_MARKER: &str = "peer-intervention";
+
+/// Stub text used when an annotation is redacted for policy violation.
+/// Shared between `sanitize_raw_fallback` and `main.rs` to prevent drift.
+pub(crate) const POLICY_VIOLATION_STUB: &str =
+    "Investigation output contained a prohibited peer-intervention \
+     command. Original text redacted.";
+
+/// Check content policy: reject annotations containing peer-intervention commands.
+///
+/// Separated from `validate_structured_annotation` so that `extract_json_object`
+/// can identify structurally valid JSON without policy errors causing it to skip
+/// the real annotation object. Policy violations surface in `parse_structured_annotation`
+/// with a clear error message, not as a misleading "failed to parse" fallback.
+fn check_peer_intervention_policy(ann: &StructuredAnnotation) -> Result<()> {
+    let all_text_fields = [
+        ann.action.as_deref().unwrap_or(""),
+        &ann.summary,
+        &ann.cause,
+        &ann.scope,
+    ]
+    .into_iter()
+    .chain(ann.evidence.iter().map(|e| e.as_str()));
+
+    for field_text in all_text_fields {
+        // Check the deserialized text and also a decoded version to catch
+        // double-escaped Unicode (\\uXXXX → \uXXXX after serde, then decoded here).
+        // Two-pass decode mirrors sanitize_raw_fallback for nested encoding.
+        let decoded = decode_unicode_escapes(field_text);
+        let decoded = if decoded != field_text && decoded.contains("\\u") {
+            let d2 = decode_unicode_escapes(&decoded);
+            if d2 != decoded {
+                d2
+            } else {
+                decoded
+            }
+        } else {
+            decoded
+        };
+        let texts_to_check: &[&str] = if decoded != field_text {
+            &[field_text, &decoded]
+        } else {
+            &[field_text]
+        };
+        for text in texts_to_check {
+            if let Some(pattern) = contains_peer_intervention(text) {
+                anyhow::bail!(
+                    "annotation contains {POLICY_ERROR_MARKER} command ({pattern}); \
+                     these are research/monitoring nodes — peer intervention is not permitted"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Parse Claude's result text as a structured annotation JSON object.
 ///
 /// Extracts the JSON object from the string before deserialising, tolerating
 /// code fences, preambles, or trailing commentary that Claude may add despite
 /// the strict prompt instruction.
-pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotation> {
+///
+/// Returns `AnnotationError::PolicyViolation` if the annotation is structurally
+/// valid but contains prohibited peer-intervention commands, or
+/// `AnnotationError::ParseError` for JSON/structural failures.
+pub(crate) fn parse_structured_annotation(
+    raw: &str,
+) -> std::result::Result<StructuredAnnotation, AnnotationError> {
     let mut ann: StructuredAnnotation = serde_json::from_str(raw)
         .or_else(|first_err| {
             extract_json_object(raw)
@@ -129,8 +225,11 @@ pub(crate) fn parse_structured_annotation(raw: &str) -> Result<StructuredAnnotat
                         .context("extracted JSON object failed to deserialize")
                 })
         })
-        .context("Claude output is not valid StructuredAnnotation JSON")?;
-    validate_structured_annotation(&ann)?;
+        .context("Claude output is not valid StructuredAnnotation JSON")
+        .map_err(AnnotationError::ParseError)?;
+    validate_structured_annotation(&ann).map_err(AnnotationError::ParseError)?;
+    check_peer_intervention_policy(&ann)
+        .map_err(|e| AnnotationError::PolicyViolation(e.to_string()))?;
     // Normalize benign action to None so consumers don't need to re-filter
     // empty string / "none" variants that passed validation.
     if ann.verdict == Verdict::Benign {
@@ -187,6 +286,223 @@ fn find_balanced_object(s: &str, start: usize) -> Option<&str> {
         }
     }
     None
+}
+
+/// Peer-intervention command patterns that must not appear in annotations.
+/// Scoped to peer-level intervention only — node-level remediation like
+/// `setnetworkactive`, `systemctl restart`, etc. is intentionally allowed.
+const PEER_INTERVENTION_PATTERNS: &[&str] = &[
+    // Command-form patterns
+    "disconnectnode",
+    "setban",
+    // Natural-language patterns (curated, kept minimal to avoid false positives)
+    "disconnect the peer",
+    "disconnect that peer",
+    "disconnect this peer",
+    "disconnect peer",
+    "disconnect peers",
+    "disconnecting the peer",
+    "disconnecting peer",
+    "disconnecting peers",
+    "disconnecting from the peer",
+    "disconnecting from peer",
+    "disconnecting from peers",
+    "disconnect from the peer",
+    "disconnect from peer",
+    "disconnect from peers",
+    "disconnect and ban",
+    "ban the peer",
+    "ban that peer",
+    "ban this peer",
+    "ban peer",
+    "ban peers",
+    "ban these peers",
+    "ban the peers",
+    "disconnect the peers",
+    "disconnecting the peers",
+    "banning the peer",
+    "banning peer",
+    "banning peers",
+];
+
+/// Zero-width Unicode characters that could be inserted between letters of
+/// a prohibited command to evade substring matching.
+const ZERO_WIDTH_CHARS: &[char] = &[
+    '\u{200B}', // ZERO WIDTH SPACE
+    '\u{200C}', // ZERO WIDTH NON-JOINER
+    '\u{200D}', // ZERO WIDTH JOINER
+    '\u{FEFF}', // BOM / ZERO WIDTH NO-BREAK SPACE
+    '\u{2060}', // WORD JOINER
+    '\u{00AD}', // SOFT HYPHEN
+    '\u{180E}', // MONGOLIAN VOWEL SEPARATOR
+    '\u{2061}', // FUNCTION APPLICATION
+    '\u{2062}', // INVISIBLE TIMES
+    '\u{2063}', // INVISIBLE SEPARATOR
+    '\u{2064}', // INVISIBLE PLUS
+];
+
+/// Check whether text contains peer-intervention commands.
+/// Returns `Some(pattern)` if a match is found, `None` if clean.
+///
+/// Uses word-boundary-aware matching: each pattern must have non-alphanumeric
+/// characters (or string boundaries) on both sides. This prevents false positives
+/// like "urban peer" matching "ban peer" or "setbandwidth" matching "setban".
+///
+/// Known limitations:
+/// - Bare "ban <IP>" without the word "peer" is not matched to avoid false
+///   positives on observational text. The RPC command `setban` is covered separately.
+/// - Unicode homoglyph/confusable characters (e.g., Cyrillic `а` for Latin `a`)
+///   are not normalized. This is accepted because Claude does not output confusable
+///   characters in practice — the prompt rewrite is the primary defense.
+/// - Negated forms ("we should not ban peers") will trigger the guard. This is
+///   accepted — the cost of occasionally redacting a valid annotation that restates
+///   the no-intervention policy is lower than the cost of missing a real violation.
+/// - Hyphen-split command names ("set-ban", "dis-connectnode") are not matched.
+///   Claude does not produce hyphenated RPC names in practice.
+/// - Snake_case forms ("ban_peer") are not matched because underscore is treated
+///   as a word character. The RPC command `setban` covers the command form.
+pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
+    let normalized: String = text
+        .chars()
+        .filter(|c| !ZERO_WIDTH_CHARS.contains(c))
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect::<String>()
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    PEER_INTERVENTION_PATTERNS
+        .iter()
+        .find(|p| has_word_boundary_match(&normalized, p))
+        .copied()
+}
+
+/// Check if `pattern` appears in `text` with word boundaries on both sides.
+/// A word boundary means the adjacent character is not a word character or the
+/// match is at the start/end of the text. Word characters include alphanumerics,
+/// hyphens, and underscores (to avoid false positives on "peer-to-peer" etc.).
+fn has_word_boundary_match(text: &str, pattern: &str) -> bool {
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    let mut idx = 0;
+    while let Some(pos) = text[idx..].find(pattern) {
+        let abs = idx + pos;
+        let preceded_by_word_char =
+            abs > 0 && text[..abs].chars().next_back().is_some_and(is_word_char);
+        let end = abs + pattern.len();
+        let followed_by_word_char = text[end..].chars().next().is_some_and(is_word_char);
+        if !preceded_by_word_char && !followed_by_word_char {
+            return true;
+        }
+        // Step past the first character of the match. All current patterns
+        // are ASCII (1 byte), but use char width for safety if non-ASCII
+        // patterns are ever added.
+        idx = abs + pattern.chars().next().map_or(1, |c| c.len_utf8());
+    }
+    false
+}
+
+/// Result of checking raw fallback text against the peer-intervention policy.
+pub(crate) struct RawFallbackResult {
+    /// HTML body to post to Grafana.
+    pub(crate) grafana_body: String,
+    /// Text to store in the log `raw_text` field (visible in /logs viewer).
+    pub(crate) log_text: String,
+    /// Whether the policy was violated.
+    pub(crate) policy_violated: bool,
+    /// The pattern that matched, if any (for diagnostic logging).
+    pub(crate) matched_pattern: Option<&'static str>,
+}
+
+/// Check raw fallback text against the peer-intervention policy and produce
+/// safe content for both Grafana and the log viewer.
+///
+/// Scans both the raw text and a JSON-unescaped version (resolving `\uXXXX`
+/// sequences) to catch Unicode-escaped prohibited commands that would evade
+/// plain substring matching on the raw bytes.
+pub(crate) fn sanitize_raw_fallback(raw: &str) -> RawFallbackResult {
+    // First check the raw text directly.
+    let matched = contains_peer_intervention(raw);
+    // Also check a version with \uXXXX sequences decoded, to catch
+    // Unicode-escaped prohibited commands. Uses a direct decoder instead
+    // of JSON parsing to avoid failures from control chars or invalid escapes.
+    let matched = matched.or_else(|| {
+        if !raw.contains("\\u") {
+            return None;
+        }
+        let decoded = decode_unicode_escapes(raw);
+        if decoded == raw {
+            return None; // No escapes were actually resolved
+        }
+        // Re-decode once if the first pass introduced a new \uXXXX sequence
+        // (e.g. \u005Cu0064 → \u0064 → d, catching nested encoding).
+        let decoded = if decoded.contains("\\u") {
+            let d2 = decode_unicode_escapes(&decoded);
+            if d2 != decoded {
+                d2
+            } else {
+                decoded
+            }
+        } else {
+            decoded
+        };
+        contains_peer_intervention(&decoded)
+    });
+    if let Some(pattern) = matched {
+        RawFallbackResult {
+            grafana_body: format!("<b>POLICY VIOLATION:</b> {POLICY_VIOLATION_STUB}"),
+            log_text: POLICY_VIOLATION_STUB.to_string(),
+            policy_violated: true,
+            matched_pattern: Some(pattern),
+        }
+    } else {
+        RawFallbackResult {
+            grafana_body: html_escape(raw),
+            log_text: raw.to_string(),
+            policy_violated: false,
+            matched_pattern: None,
+        }
+    }
+}
+
+/// Decode `\uXXXX` escape sequences in a string, leaving all other content
+/// (including invalid escapes, control chars, etc.) unchanged. This avoids
+/// the fragility of JSON-wrapping the string for decoding.
+fn decode_unicode_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for \u followed by exactly 4 hex digits
+        if bytes[i] == b'\\' && i + 5 < bytes.len() && bytes[i + 1] == b'u' {
+            let hex_bytes = &bytes[i + 2..i + 6];
+            if hex_bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+                // Safety: all bytes are ASCII hex digits, so this is valid UTF-8.
+                let hex = std::str::from_utf8(hex_bytes).expect("all ASCII hex");
+                if let Ok(code) = u32::from_str_radix(hex, 16) {
+                    if let Some(decoded) = char::from_u32(code) {
+                        out.push(decoded);
+                        i += 6;
+                        continue;
+                    }
+                }
+                // Valid hex but invalid codepoint (surrogate) — emit space.
+                // This handles the between-word case (ban\uD800peer → "ban peer"
+                // → matched). The within-word case (disc\uD800onnectnode) produces
+                // "disc onnectnode" which won't match "disconnectnode", but the
+                // raw first-pass scan catches that directly before decoding.
+                out.push(' ');
+                i += 6;
+                continue;
+            }
+        }
+        // Not a \uXXXX sequence — emit the character unchanged.
+        // Safety: we only index bytes for ASCII checks above; for output we
+        // iterate chars to handle multi-byte UTF-8 correctly.
+        let c = s[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
 }
 
 /// Escape text for safe inclusion in HTML annotation content.
@@ -336,7 +652,7 @@ mod tests {
     fn investigate_json() -> &'static str {
         r#"{
             "verdict": "investigate",
-            "action": "monitor for 15 minutes, escalate if rate exceeds 35/s",
+            "action": "operator should review getpeerinfo for peers with elevated addr byte volumes and document findings",
             "summary": "Second consecutive addr spike within 14 minutes on vps-prod-01.",
             "cause": "Periodic addr relay re-broadcast cycle across inbound peer set.",
             "scope": "multi-host (vps-prod-01 and vps-dev-01 simultaneously)",
@@ -368,7 +684,7 @@ mod tests {
     fn parse_investigate_annotation() {
         let ann = parse_structured_annotation(investigate_json()).unwrap();
         assert_eq!(ann.verdict, Verdict::Investigate);
-        assert!(ann.action.as_ref().unwrap().contains("monitor"));
+        assert!(ann.action.as_ref().unwrap().contains("getpeerinfo"));
     }
 
     #[test]
@@ -702,5 +1018,175 @@ mod tests {
     fn strip_html_passes_through_plain_text() {
         let text = "plain text without any html";
         assert_eq!(strip_annotation_html(text), text);
+    }
+
+    // ── Peer-intervention policy (contains_peer_intervention) ─────────
+
+    #[test]
+    fn peer_intervention_detects_disconnectnode() {
+        assert!(contains_peer_intervention("bitcoin-cli disconnectnode 1.2.3.4").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_detects_setban() {
+        assert!(contains_peer_intervention("bitcoin-cli setban 1.2.3.4 add 86400").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_case_insensitive() {
+        assert!(contains_peer_intervention("DISCONNECTNODE").is_some());
+        assert!(contains_peer_intervention("SetBan").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_detects_natural_language() {
+        assert!(contains_peer_intervention("disconnect the peer at 1.2.3.4").is_some());
+        assert!(contains_peer_intervention("ban the peer for 24 hours").is_some());
+        assert!(contains_peer_intervention("disconnect and ban 1.2.3.4").is_some());
+        assert!(contains_peer_intervention("disconnect peers with high misbehavior").is_some());
+        assert!(contains_peer_intervention("ban peer 192.168.1.1 as it is sending spam").is_some());
+        assert!(contains_peer_intervention("ban these peers for 24 hours").is_some());
+        assert!(contains_peer_intervention("ban peers sending spam").is_some());
+    }
+
+    #[test]
+    fn peer_intervention_allows_node_commands() {
+        assert!(contains_peer_intervention("systemctl restart bitcoind").is_none());
+        assert!(contains_peer_intervention("setnetworkactive true").is_none());
+        assert!(contains_peer_intervention("getpeerinfo").is_none());
+    }
+
+    #[test]
+    fn peer_intervention_no_false_positives() {
+        // "disconnected" in prose (past tense observation) should not trigger
+        assert!(contains_peer_intervention("peer disconnected at 12:00 UTC").is_none());
+        // "banned" in prose should not trigger
+        assert!(contains_peer_intervention("peer was previously banned").is_none());
+        // "bandwidth" should not trigger
+        assert!(contains_peer_intervention("high bandwidth usage").is_none());
+        // "urban peer" / "suburban peer" must not trigger "ban peer" match
+        assert!(
+            contains_peer_intervention("the urban peer cluster shows elevated addr volumes")
+                .is_none()
+        );
+        assert!(contains_peer_intervention("suburban peer group has high latency").is_none());
+        // "setbandwidth" must not trigger "setban" match (trailing boundary)
+        assert!(contains_peer_intervention("setbandwidth 1000").is_none());
+        // "disconnect and bank" must not trigger "disconnect and ban" match
+        assert!(contains_peer_intervention("disconnect and bank transfer").is_none());
+        // "ban peer-to-peer" must not trigger "ban peer" match (hyphen is word char)
+        assert!(
+            contains_peer_intervention("do not ban peer-to-peer addr relay from this subnet")
+                .is_none()
+        );
+        // multi-space runs must not evade multi-word patterns
+        assert!(contains_peer_intervention("ban  peer sending spam").is_some());
+        assert!(contains_peer_intervention("disconnect\t\tthe peer").is_some());
+    }
+
+    // ── Peer-intervention policy (structured path) ────────────────────
+
+    #[test]
+    fn validate_rejects_action_with_disconnectnode() {
+        let json = r#"{"verdict":"action_required","action":"run bitcoin-cli disconnectnode 1.2.3.4:8333",
+            "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        let err = parse_structured_annotation(json).unwrap_err();
+        assert!(err.to_string().contains(POLICY_ERROR_MARKER));
+    }
+
+    #[test]
+    fn validate_rejects_setban_in_summary() {
+        let json = r#"{"verdict":"investigate","action":"check logs",
+            "summary":"consider running setban on 1.2.3.4","cause":"test","scope":"test",
+            "evidence":["a","b"]}"#;
+        let err = parse_structured_annotation(json).unwrap_err();
+        assert!(err.to_string().contains(POLICY_ERROR_MARKER));
+    }
+
+    #[test]
+    fn validate_rejects_disconnectnode_in_evidence() {
+        let json = r#"{"verdict":"investigate",
+            "summary":"test","cause":"test","scope":"test",
+            "evidence":["run disconnectnode to fix","metric b"]}"#;
+        let err = parse_structured_annotation(json).unwrap_err();
+        assert!(err.to_string().contains(POLICY_ERROR_MARKER));
+    }
+
+    #[test]
+    fn validate_allows_node_level_actions() {
+        let json = r#"{"verdict":"action_required","action":"systemctl restart bitcoind on bitcoin-01",
+            "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        assert!(parse_structured_annotation(json).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_policy_violation_in_preamble_wrapped_json() {
+        // When Claude outputs preamble + JSON with a prohibited command,
+        // the policy error must surface as "peer-intervention", not as a
+        // misleading "failed to parse structured annotation" format error.
+        let wrapped = r#"Here is the analysis:
+{"verdict":"action_required","action":"run bitcoin-cli disconnectnode 1.2.3.4:8333",
+"summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        let err = parse_structured_annotation(wrapped).unwrap_err();
+        assert!(
+            err.to_string().contains(POLICY_ERROR_MARKER),
+            "preamble-wrapped policy violation should surface as peer-intervention error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_allows_setnetworkactive() {
+        let json = r#"{"verdict":"action_required","action":"bitcoin-cli setnetworkactive true",
+            "summary":"test","cause":"test","scope":"test","evidence":["a","b"]}"#;
+        assert!(parse_structured_annotation(json).is_ok());
+    }
+
+    // ── sanitize_raw_fallback ─────────────────────────────────────────
+
+    #[test]
+    fn raw_fallback_redacts_prohibited_text() {
+        let result = sanitize_raw_fallback(
+            "You should run bitcoin-cli disconnectnode 1.2.3.4:8333 to fix this.",
+        );
+        assert!(result.policy_violated);
+        assert!(result.grafana_body.contains("POLICY VIOLATION"));
+        assert!(!result.grafana_body.contains("disconnectnode"));
+        assert!(!result.log_text.contains("disconnectnode"));
+        assert!(result.log_text.contains("redacted"));
+    }
+
+    #[test]
+    fn raw_fallback_redacts_unicode_escaped_prohibited_text() {
+        // \u0064 = "d", so "\u0064isconnectnode" decodes to "disconnectnode"
+        let result =
+            sanitize_raw_fallback("You should run bitcoin-cli \\u0064isconnectnode 1.2.3.4:8333");
+        assert!(result.policy_violated);
+        assert!(result.matched_pattern.is_some());
+    }
+
+    #[test]
+    fn raw_fallback_redacts_unicode_escape_with_newlines() {
+        // Multi-line output with Unicode escape — must not be bypassed by
+        // the presence of control characters in the raw text.
+        let result = sanitize_raw_fallback(
+            "The analysis is complete.\nRun bitcoin-cli \\u0064isconnectnode 1.2.3.4 to fix.",
+        );
+        assert!(result.policy_violated);
+    }
+
+    #[test]
+    fn raw_fallback_exposes_matched_pattern() {
+        let result = sanitize_raw_fallback("run bitcoin-cli setban 1.2.3.4 add");
+        assert!(result.policy_violated);
+        assert_eq!(result.matched_pattern, Some("setban"));
+    }
+
+    #[test]
+    fn raw_fallback_passes_clean_text() {
+        let raw = "The addr rate peaked at 25/s, check getpeerinfo for details.";
+        let result = sanitize_raw_fallback(raw);
+        assert!(!result.policy_violated);
+        assert_eq!(result.log_text, raw);
+        assert!(result.grafana_body.contains("addr rate peaked"));
     }
 }
