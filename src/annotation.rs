@@ -168,7 +168,18 @@ fn check_peer_intervention_policy(ann: &StructuredAnnotation) -> Result<()> {
     for field_text in all_text_fields {
         // Check the deserialized text and also a decoded version to catch
         // double-escaped Unicode (\\uXXXX → \uXXXX after serde, then decoded here).
+        // Two-pass decode mirrors sanitize_raw_fallback for nested encoding.
         let decoded = decode_unicode_escapes(field_text);
+        let decoded = if decoded != field_text && decoded.contains("\\u") {
+            let d2 = decode_unicode_escapes(&decoded);
+            if d2 != decoded {
+                d2
+            } else {
+                decoded
+            }
+        } else {
+            decoded
+        };
         let texts_to_check: &[&str] = if decoded != field_text {
             &[field_text, &decoded]
         } else {
@@ -290,6 +301,9 @@ const PEER_INTERVENTION_PATTERNS: &[&str] = &[
     "disconnecting from the peer",
     "disconnecting from peer",
     "disconnecting from peers",
+    "disconnect from the peer",
+    "disconnect from peer",
+    "disconnect from peers",
     "disconnect and ban",
     "ban the peer",
     "ban that peer",
