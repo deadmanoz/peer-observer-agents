@@ -82,8 +82,8 @@ pub(crate) struct StructuredAnnotation {
 ///
 /// This checks field presence, emptiness, evidence count, and verdict-action
 /// consistency. It does NOT check content policy (peer-intervention commands).
-/// Used by `extract_json_object` to identify valid annotation JSON among
-/// preamble/commentary text.
+/// Called by `extract_json_object` as a filter (to skip incidental JSON objects
+/// in preamble) and by `parse_structured_annotation` as a hard validation gate.
 fn validate_structured_annotation(ann: &StructuredAnnotation) -> Result<()> {
     ensure!(
         !ann.summary.trim().is_empty(),
@@ -359,6 +359,8 @@ const ZERO_WIDTH_CHARS: &[char] = &[
 ///   the no-intervention policy is lower than the cost of missing a real violation.
 /// - Hyphen-split command names ("set-ban", "dis-connectnode") are not matched.
 ///   Claude does not produce hyphenated RPC names in practice.
+/// - Snake_case forms ("ban_peer") are not matched because underscore is treated
+///   as a word character. The RPC command `setban` covers the command form.
 pub(crate) fn contains_peer_intervention(text: &str) -> Option<&'static str> {
     let normalized: String = text
         .chars()
@@ -484,10 +486,10 @@ fn decode_unicode_escapes(s: &str) -> String {
                     }
                 }
                 // Valid hex but invalid codepoint (surrogate) — emit space.
-                // `contains_peer_intervention` collapses whitespace runs via
-                // split_ascii_whitespace, so this handles both within-word
-                // (disc\uD800onnectnode → "disc onnectnode" → collapsed → matched)
-                // and between-word (ban\uD800peer → "ban peer" → matched) cases.
+                // This handles the between-word case (ban\uD800peer → "ban peer"
+                // → matched). The within-word case (disc\uD800onnectnode) produces
+                // "disc onnectnode" which won't match "disconnectnode", but the
+                // raw first-pass scan catches that directly before decoding.
                 out.push(' ');
                 i += 6;
                 continue;
