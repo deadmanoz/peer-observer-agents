@@ -1412,6 +1412,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_logs_returns_legacy_entries_without_agent_version() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::get;
+        use axum::Router;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "peer-observer-test-legacy-ver-{}",
+            std::process::id()
+        ));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let log_path = dir.join("legacy-ver.jsonl");
+        let log_path_str = log_path.to_str().unwrap().to_string();
+        let _ = tokio::fs::remove_file(&log_path).await;
+
+        // Write a JSONL line that lacks the agent_version field (pre-version entry).
+        let legacy_line = r#"{"v":1,"logged_at":"2025-06-15T20:00:00Z","alert_starts_at":"2025-06-15T12:00:00Z","alert_id":"Legacy:host:ts","alertname":"Legacy","host":"bitcoin-03","threadname":"","entry_kind":"structured","verdict":"benign","summary":"Old entry.","cause":"Normal.","scope":"single-host","evidence":["e1"],"telemetry":{"num_turns":5,"duration_ms":10000,"duration_api_ms":8000,"cost_usd":0.02,"input_tokens":5000,"output_tokens":1000,"stop_reason":"end_turn","session_id":"legacy-session"}}"#;
+        tokio::fs::write(&log_path, format!("{}\n", legacy_line))
+            .await
+            .unwrap();
+
+        let state = make_test_state(log_path_str);
+        let app = Router::new()
+            .route("/api/logs", get(api_logs))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/logs")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let entries = parse_ndjson_body(&body);
+        assert_eq!(
+            entries.len(),
+            1,
+            "legacy entry should not be silently dropped"
+        );
+        assert_eq!(entries[0].agent_version, "unknown");
+
+        let _ = tokio::fs::remove_file(&log_path).await;
+        let _ = tokio::fs::remove_dir(&dir).await;
+    }
+
+    #[tokio::test]
     async fn api_logs_date_range_accepts_rfc3339_with_offset() {
         use axum::body::Body;
         use axum::http::Request;

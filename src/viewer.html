@@ -55,7 +55,6 @@
   /* Expanded row */
   .detail-row td { padding: 12px 10px; background: var(--bg-card); }
   .detail-row:hover { background: var(--bg-card); }
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .detail-section h3 { font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
   .detail-section p, .detail-section li { font-size: 13px; }
   .detail-section ul { padding-left: 16px; }
@@ -69,6 +68,9 @@
   .pagination { display: flex; justify-content: center; padding: 16px; }
   .pagination button { padding: 8px 20px; }
 
+  /* Version badge */
+  .version-badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(88,166,255,0.15); color: var(--blue); font-weight: 600; }
+
   /* Hidden */
   .hidden { display: none; }
 </style>
@@ -77,6 +79,7 @@
 <div class="container">
   <header>
     <h1>Annotation Log</h1>
+    <span class="version-badge hidden" id="version-badge"></span>
     <span class="stats" id="stats"></span>
   </header>
 
@@ -137,6 +140,9 @@
   // PROXY_AUTH is true and TOKEN stays empty (the proxy handles auth).
   let PROXY_AUTH = false;
 
+  // Guard to prevent duplicate /api/version fetches.
+  let versionLoaded = false;
+
   // Timezone display state.
   const USER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
   let USE_LOCAL_TZ = document.getElementById('tz-toggle').value === 'local';
@@ -151,6 +157,23 @@
     div.className = 'status-msg';
     div.textContent = text;
     container.appendChild(div);
+  }
+
+  function fetchOpts() {
+    return PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
+  }
+
+  async function loadVersionBadge() {
+    if (versionLoaded) return;
+    versionLoaded = true;
+    try {
+      const resp = await fetch('/api/version', fetchOpts());
+      if (!resp.ok) { versionLoaded = false; return; }
+      const data = await resp.json();
+      const badge = document.getElementById('version-badge');
+      badge.textContent = 'server v' + data.version;
+      badge.classList.remove('hidden');
+    } catch(e) { versionLoaded = false; }
   }
 
   // Monotonic request ID to discard stale responses.  Each loadLogs()
@@ -232,8 +255,7 @@
         params.set('logged_before', d.toISOString());
       }
 
-      const fetchOpts = PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
-      const resp = await fetch('/api/logs?' + params.toString(), fetchOpts);
+      const resp = await fetch('/api/logs?' + params.toString(), fetchOpts());
 
       // Stale response — a newer loadLogs() call was made while this
       // one was in flight.  Discard silently.
@@ -245,6 +267,8 @@
         document.getElementById('auto-refresh').checked = false;
         document.getElementById('auth-bar').classList.remove('hidden');
         document.getElementById('filters-bar').classList.add('hidden');
+        document.getElementById('version-badge').classList.add('hidden');
+        versionLoaded = false;
         showStatus(content, 'Invalid token. Please try again.');
         return;
       }
@@ -252,6 +276,8 @@
         showStatus(content, 'Error: ' + resp.status);
         return;
       }
+
+      loadVersionBadge();
 
       // Cursor is in the X-Next-Cursor response header
       NEXT_CURSOR = resp.headers.get('x-next-cursor') || null;
@@ -437,6 +463,7 @@
     const td = document.createElement('td');
     td.colSpan = colSpan;
 
+    // Content-specific section
     if (entry.entry_kind === 'raw_fallback') {
       const section = document.createElement('div');
       section.className = 'detail-section';
@@ -450,21 +477,11 @@
       section.appendChild(pre);
       td.appendChild(section);
     } else {
-      const grid = document.createElement('div');
-      grid.className = 'detail-grid';
-
-      // Left column: annotation content
-      const left = document.createElement('div');
-
-      const causeSection = makeSection('Cause', entry.cause);
-      left.appendChild(causeSection);
-
-      const scopeSection = makeSection('Scope', entry.scope);
-      left.appendChild(scopeSection);
+      td.appendChild(makeSection('Cause', entry.cause));
+      td.appendChild(makeSection('Scope', entry.scope));
 
       if (entry.action) {
-        const actionSection = makeSection('Action', entry.action);
-        left.appendChild(actionSection);
+        td.appendChild(makeSection('Action', entry.action));
       }
 
       if (entry.evidence && entry.evidence.length > 0) {
@@ -480,48 +497,43 @@
           ul.appendChild(li);
         }
         evSection.appendChild(ul);
-        left.appendChild(evSection);
+        td.appendChild(evSection);
       }
+    }
 
-      grid.appendChild(left);
+    // Shared metadata section (all entry kinds)
+    const metaSection = document.createElement('div');
+    metaSection.className = 'detail-section';
+    const h3m = document.createElement('h3');
+    h3m.textContent = 'Metadata';
+    metaSection.appendChild(h3m);
+    const metaGrid = document.createElement('div');
+    metaGrid.className = 'telemetry-grid';
+    addTelemetryItem(metaGrid, 'Alert ID', entry.alert_id);
+    addTelemetryItem(metaGrid, 'Entry Kind', entry.entry_kind);
+    addTelemetryItem(metaGrid, 'Agent Version', entry.agent_version || 'unknown');
+    metaSection.appendChild(metaGrid);
+    td.appendChild(metaSection);
 
-      // Right column: telemetry + metadata
-      const right = document.createElement('div');
-
-      const metaSection = document.createElement('div');
-      metaSection.className = 'detail-section';
-      const h3m = document.createElement('h3');
-      h3m.textContent = 'Metadata';
-      metaSection.appendChild(h3m);
-      const metaGrid = document.createElement('div');
-      metaGrid.className = 'telemetry-grid';
-      addTelemetryItem(metaGrid, 'Alert ID', entry.alert_id);
-      addTelemetryItem(metaGrid, 'Entry Kind', entry.entry_kind);
-      metaSection.appendChild(metaGrid);
-      right.appendChild(metaSection);
-
-      if (entry.telemetry) {
-        const telSection = document.createElement('div');
-        telSection.className = 'detail-section';
-        const h3t = document.createElement('h3');
-        h3t.textContent = 'Telemetry';
-        telSection.appendChild(h3t);
-        const telGrid = document.createElement('div');
-        telGrid.className = 'telemetry-grid';
-        addTelemetryItem(telGrid, 'Cost', '$' + entry.telemetry.cost_usd.toFixed(4));
-        addTelemetryItem(telGrid, 'Turns', entry.telemetry.num_turns);
-        addTelemetryItem(telGrid, 'Duration', formatDuration(entry.telemetry.duration_ms));
-        addTelemetryItem(telGrid, 'API Time', formatDuration(entry.telemetry.duration_api_ms));
-        addTelemetryItem(telGrid, 'Input Tokens', entry.telemetry.input_tokens.toLocaleString());
-        addTelemetryItem(telGrid, 'Output Tokens', entry.telemetry.output_tokens.toLocaleString());
-        addTelemetryItem(telGrid, 'Stop Reason', entry.telemetry.stop_reason);
-        addTelemetryItem(telGrid, 'Session ID', entry.telemetry.session_id);
-        telSection.appendChild(telGrid);
-        right.appendChild(telSection);
-      }
-
-      grid.appendChild(right);
-      td.appendChild(grid);
+    // Shared telemetry section (all entry kinds)
+    if (entry.telemetry) {
+      const telSection = document.createElement('div');
+      telSection.className = 'detail-section';
+      const h3t = document.createElement('h3');
+      h3t.textContent = 'Telemetry';
+      telSection.appendChild(h3t);
+      const telGrid = document.createElement('div');
+      telGrid.className = 'telemetry-grid';
+      addTelemetryItem(telGrid, 'Cost', '$' + entry.telemetry.cost_usd.toFixed(4));
+      addTelemetryItem(telGrid, 'Turns', entry.telemetry.num_turns);
+      addTelemetryItem(telGrid, 'Duration', formatDuration(entry.telemetry.duration_ms));
+      addTelemetryItem(telGrid, 'API Time', formatDuration(entry.telemetry.duration_api_ms));
+      addTelemetryItem(telGrid, 'Input Tokens', entry.telemetry.input_tokens.toLocaleString());
+      addTelemetryItem(telGrid, 'Output Tokens', entry.telemetry.output_tokens.toLocaleString());
+      addTelemetryItem(telGrid, 'Stop Reason', entry.telemetry.stop_reason);
+      addTelemetryItem(telGrid, 'Session ID', entry.telemetry.session_id);
+      telSection.appendChild(telGrid);
+      td.appendChild(telSection);
     }
 
     tr.appendChild(td);

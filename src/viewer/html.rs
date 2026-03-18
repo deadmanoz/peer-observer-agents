@@ -82,6 +82,7 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Annotation Log"));
+        assert!(html.contains(r#"id="version-badge""#));
     }
 
     #[tokio::test]

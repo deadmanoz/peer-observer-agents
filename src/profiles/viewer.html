@@ -85,6 +85,9 @@
   .pagination { display: flex; justify-content: center; padding: 16px; }
   .pagination button { padding: 8px 20px; }
 
+  /* Version badge */
+  .version-badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(88,166,255,0.15); color: var(--blue); font-weight: 600; }
+
   /* Hidden */
   .hidden { display: none; }
 </style>
@@ -93,6 +96,7 @@
 <div class="container">
   <header>
     <h1>Peer Profiles</h1>
+    <span class="version-badge hidden" id="version-badge"></span>
     <span class="stats" id="stats"></span>
   </header>
 
@@ -139,6 +143,9 @@
   let STATS_DATA = null;
   let PROXY_AUTH = false;
 
+  // Guard to prevent duplicate /api/version fetches.
+  let versionLoaded = false;
+
   // Current view: 'list' or 'detail'
   let VIEW = 'list';
 
@@ -166,6 +173,19 @@
 
   function fetchOpts() {
     return PROXY_AUTH ? {} : { headers: { 'Authorization': 'Bearer ' + TOKEN } };
+  }
+
+  async function loadVersionBadge() {
+    if (versionLoaded) return;
+    versionLoaded = true;
+    try {
+      var resp = await fetch('/api/version', fetchOpts());
+      if (!resp.ok) { versionLoaded = false; return; }
+      var data = await resp.json();
+      var badge = document.getElementById('version-badge');
+      badge.textContent = 'server v' + data.version;
+      badge.classList.remove('hidden');
+    } catch(e) { versionLoaded = false; }
   }
 
   window.authenticate = function() {
@@ -218,6 +238,7 @@
     try {
       var resp = await fetch('/api/peers/stats', fetchOpts());
       if (!resp.ok) return;
+      loadVersionBadge();
       STATS_DATA = await resp.json();
       renderStats();
       populateHostFilter();
@@ -325,6 +346,8 @@
         document.getElementById('auth-bar').classList.remove('hidden');
         document.getElementById('filters-bar').classList.add('hidden');
         document.getElementById('stats-bar').classList.add('hidden');
+        document.getElementById('version-badge').classList.add('hidden');
+        versionLoaded = false;
         showStatus(content, 'Invalid token. Please try again.');
         return;
       }
@@ -332,6 +355,8 @@
         showStatus(content, 'Error: ' + resp.status);
         return;
       }
+
+      loadVersionBadge();
 
       var data = await resp.json();
       if (myRequestId !== REQUEST_ID) return;
@@ -445,6 +470,8 @@
         document.getElementById('auth-bar').classList.remove('hidden');
         document.getElementById('filters-bar').classList.add('hidden');
         document.getElementById('stats-bar').classList.add('hidden');
+        document.getElementById('version-badge').classList.add('hidden');
+        versionLoaded = false;
         showStatus(content, 'Invalid token. Please try again.');
         return;
       }
@@ -452,6 +479,8 @@
         showStatus(content, 'Error loading peer: ' + resp.status);
         return;
       }
+
+      loadVersionBadge();
 
       var data = await resp.json();
       renderPeerDetail(data);

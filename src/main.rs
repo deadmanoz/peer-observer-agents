@@ -226,6 +226,10 @@ async fn main() -> Result<()> {
         info!("viewer enabled at /logs and /api/logs");
     }
 
+    if viewer_enabled || profiles_viewer_enabled {
+        app = app.route("/api/version", get(api_version));
+    }
+
     if profiles_viewer_enabled {
         app = app
             .route("/peers", get(profiles::api::peers_page))
@@ -245,6 +249,21 @@ async fn main() -> Result<()> {
 
 async fn healthz() -> StatusCode {
     StatusCode::OK
+}
+
+async fn api_version(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    let token = state
+        .viewer_auth_token
+        .as_deref()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    viewer::check_auth(&headers, token)?;
+    Ok((
+        [("cache-control", "no-store")],
+        Json(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
+    ))
 }
 
 async fn handle_webhook(
@@ -673,5 +692,96 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── /api/version endpoint ─────────────────────────────────────────
+
+    fn test_state_with_auth() -> Arc<AppState> {
+        Arc::new(AppState {
+            grafana_url: "http://localhost:3000".into(),
+            grafana_api_key: "test-key".into(),
+            claude_bin: "echo".into(),
+            claude_model: "claude-sonnet-4-6".into(),
+            mcp_config: "/dev/null".into(),
+            log_file: None,
+            claude_timeout: Duration::from_secs(DEFAULT_CLAUDE_TIMEOUT_SECS),
+            http: reqwest::Client::new(),
+            rpc_client: None,
+            investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
+            cooldown: Duration::ZERO,
+            cooldown_map: std::sync::Mutex::new(HashMap::new()),
+            viewer_auth_token: Some("test-token".into()),
+            log_write_mutex: tokio::sync::Mutex::new(()),
+            profile_db: None,
+            profiles_poll_interval: Duration::from_secs(300),
+            profiles_retention_days: 90,
+        })
+    }
+
+    #[tokio::test]
+    async fn api_version_returns_version_when_authenticated() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/api/version", get(api_version))
+            .with_state(test_state_with_auth());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/version")
+            .header("authorization", "Bearer test-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(data["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn api_version_returns_401_without_auth() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/api/version", get(api_version))
+            .with_state(test_state_with_auth());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/version")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_version_returns_404_when_no_viewer() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        // test_state() has viewer_auth_token: None
+        let app = Router::new()
+            .route("/api/version", get(api_version))
+            .with_state(test_state());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/version")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

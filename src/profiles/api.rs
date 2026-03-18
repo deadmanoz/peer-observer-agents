@@ -225,6 +225,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Peer Profiles"));
+        assert!(html.contains(r#"id="version-badge""#));
     }
 
     #[tokio::test]
