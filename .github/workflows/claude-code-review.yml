@@ -27,9 +27,39 @@ jobs:
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
             Use `gh pr diff ${{ github.event.pull_request.number }}` to get the diff.
-            Read the changed files to understand context.
+            Read the changed files and CLAUDE.md to understand project context.
 
-            For each issue found, use the mcp__github_inline_comment__create_inline_comment tool to post an inline review comment on the specific file and line.
+            ## Project Context
 
-            Focus on: bugs, security issues, logic errors, and correctness. Skip style nits.
+            This is a **private internal monitoring system** for Bitcoin P2P network observation.
+            It runs on operator-controlled infrastructure behind WireGuard VPN. There is NO
+            public-facing attack surface. The only text being processed comes from Claude CLI
+            output (not user input, not network data). Keep this threat model in mind when
+            assessing security concerns.
+
+            ## Review Guidelines
+
+            Post inline comments using mcp__github_inline_comment__create_inline_comment.
+
+            **DO comment on (in priority order):**
+            1. Bugs — logic errors, panics, data loss, incorrect behavior
+            2. Correctness — wrong types, broken invariants, off-by-one errors
+            3. Missing error handling that could cause silent failures in production
+            4. Test gaps for the actual changes (not hypothetical future changes)
+
+            **DO NOT comment on:**
+            - Style, naming, formatting (clippy and rustfmt handle this)
+            - Documentation wording or doc comment placement
+            - Theoretical adversarial bypass scenarios for heuristic matchers
+            - "What if someone changes X in the future" defensive suggestions
+            - Pattern/list completeness for curated heuristic lists (the author chose these deliberately)
+            - Log message wording preferences
+            - Suggesting refactors that don't fix a concrete bug
+
+            **Comment budget:** Aim for 2-5 high-quality comments per review cycle. If you
+            find more than 5 issues, prioritize by severity and only post the top 5. A review
+            with 1 real bug found is more valuable than a review with 10 theoretical concerns.
+
+            **Severity threshold:** Only comment if you would block the PR over the issue.
+            If the answer is "this is fine to merge but could be slightly better", don't comment.
           claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment" "Bash(gh pr diff:*)" "Bash(gh pr view:*)" "Bash(gh pr comment:*)" "Bash(gh api:*)" "Read" "Glob" "Grep" "Agent"'
