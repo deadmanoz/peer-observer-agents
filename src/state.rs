@@ -1,4 +1,5 @@
 use crate::cooldown::CooldownMap;
+use crate::debug_logs;
 use crate::parca;
 use crate::profiles::ProfileDb;
 use crate::rpc;
@@ -21,6 +22,9 @@ pub(crate) struct AppState {
     /// Optional Parca profiling client for pre-fetching CPU profile data.
     /// `None` when `ANNOTATION_AGENT_PARCA_HOSTS` is not set (feature disabled).
     pub(crate) parca_client: Option<parca::ParcaClient>,
+    /// Optional debug log fetcher for pre-fetching log context.
+    /// `None` when `ANNOTATION_AGENT_DEBUG_LOGS_ENABLED` is not set or RPC is disabled.
+    pub(crate) debug_log_client: Option<debug_logs::DebugLogClient>,
     /// Limits the number of concurrent Claude investigations to prevent
     /// resource exhaustion when Alertmanager delivers large grouped batches.
     pub(crate) investigation_semaphore: Semaphore,

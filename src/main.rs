@@ -1,6 +1,7 @@
 mod annotation;
 mod cooldown;
 mod correlation;
+mod debug_logs;
 mod grafana;
 mod investigation;
 mod parca;
@@ -141,6 +142,41 @@ async fn main() -> Result<()> {
         Err(_) => None,
     };
 
+    // Debug log client: enabled when ANNOTATION_AGENT_DEBUG_LOGS_ENABLED is set.
+    // Requires RPC_HOSTS for WireGuard IP mapping and nginx port.
+    let debug_log_client = match env::var("ANNOTATION_AGENT_DEBUG_LOGS_ENABLED") {
+        Ok(v) if v == "true" || v == "1" => {
+            let Some(ref rpc) = rpc_client else {
+                anyhow::bail!(
+                    "ANNOTATION_AGENT_DEBUG_LOGS_ENABLED requires ANNOTATION_AGENT_RPC_HOSTS \
+                     (debug logs are fetched from the same WireGuard nginx as RPC)"
+                );
+            };
+            let max_bytes: u64 = env::var("ANNOTATION_AGENT_DEBUG_LOGS_MAX_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1_048_576);
+            let window_secs: u64 = env::var("ANNOTATION_AGENT_DEBUG_LOGS_WINDOW_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300);
+            let max_lines: usize = env::var("ANNOTATION_AGENT_DEBUG_LOGS_MAX_LINES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200);
+            let client = debug_logs::DebugLogClient::new(
+                rpc.hosts().clone(),
+                rpc.port(),
+                max_bytes,
+                window_secs,
+                max_lines,
+            )?;
+            info!("debug log prefetch enabled");
+            Some(client)
+        }
+        _ => None,
+    };
+
     // Peer profiles configuration
     let profiles_poll_interval_secs: u64 = env::var("ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS")
         .ok()
@@ -207,6 +243,7 @@ async fn main() -> Result<()> {
             .context("failed to build HTTP client")?,
         rpc_client,
         parca_client,
+        debug_log_client,
         investigation_semaphore: Semaphore::new(max_concurrent),
         cooldown: Duration::from_secs(cooldown_secs),
         cooldown_map: std::sync::Mutex::new(HashMap::new()),
@@ -526,6 +563,7 @@ mod tests {
             http: reqwest::Client::new(),
             rpc_client: None,
             parca_client: None,
+            debug_log_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
@@ -625,6 +663,7 @@ mod tests {
             http: reqwest::Client::new(),
             rpc_client: None,
             parca_client: None,
+            debug_log_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::from_secs(1800),
             cooldown_map: std::sync::Mutex::new(map),
@@ -737,6 +776,7 @@ mod tests {
             http: reqwest::Client::new(),
             rpc_client: None,
             parca_client: None,
+            debug_log_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),

@@ -60,28 +60,31 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
         "PeerObserverInboundConnectionDrop" => {
             r#"1. Query `peerobserver_anomaly:level{anomaly_name="inbound_connections"}` and compare against `peerobserver_anomaly:lower_band` to confirm the drop magnitude.
 2. Check the RPC Data section above for per-peer details — examine connection ages, network types (IPv4/IPv6/Tor/I2P/CJDNS), and connection direction to see which peers remain and which likely disconnected.
-3. Check if outbound connections are also affected (correlated drop = local issue, inbound-only = external). The RPC Data getnetworkinfo section shows current connection counts.
-4. Compare the same metric across other hosts to determine if this is node-specific or network-wide.
-5. Look for recent restart indicators (uptime metrics) — the alert excludes a restart window but timing may be borderline.
-6. Conclude: identify whether the cause is a local network issue, a DNS seed problem, a peer-observer restart, or an external event."#.into()
+3. Check the Debug Log section above for disconnect reasons — look for `socket closed`, `broken pipe`, `timeout`, or other connection lifecycle events that explain why peers dropped.
+4. Check if outbound connections are also affected (correlated drop = local issue, inbound-only = external). The RPC Data getnetworkinfo section shows current connection counts.
+5. Compare the same metric across other hosts to determine if this is node-specific or network-wide.
+6. Look for recent restart indicators (uptime metrics) — the alert excludes a restart window but timing may be borderline.
+7. Conclude: identify whether the cause is a local network issue, a DNS seed problem, a peer-observer restart, or an external event."#.into()
         }
 
         "PeerObserverOutboundConnectionDrop" => {
             r#"1. Query `peerobserver_anomaly:level{anomaly_name="outbound_connections"}` and compare against `peerobserver_anomaly:lower_band` to confirm the drop.
 2. Check the RPC Data section above — count remaining outbound peers (normal is 8 full-relay + 2 block-only). The getnetworkinfo section shows aggregate connection counts.
-3. Investigate DNS seed reachability — outbound drops usually indicate DNS or network connectivity issues.
-4. Check if inbound connections are also affected (both dropping = local network issue).
-5. Compare across other hosts to determine scope.
-6. Conclude: identify whether this is a DNS resolution failure, local network outage, or Bitcoin network event."#.into()
+3. Check the Debug Log section above for disconnect reasons — look for `socket closed`, `broken pipe`, `timeout`, or connection failure messages that explain why outbound peers dropped.
+4. Investigate DNS seed reachability — outbound drops usually indicate DNS or network connectivity issues.
+5. Check if inbound connections are also affected (both dropping = local network issue).
+6. Compare across other hosts to determine scope.
+7. Conclude: identify whether this is a DNS resolution failure, local network outage, or Bitcoin network event."#.into()
         }
 
         "PeerObserverTotalPeersDrop" => {
             r#"1. Query `peerobserver_rpc_peer_info_num_peers` to confirm the current peer count (normal is 10 outbound: 8 full-relay + 2 block-only).
 2. Check the RPC Data section above — the getpeerinfo data shows all current peers with connection ages, types, and direction. The getnetworkinfo section shows aggregate inbound/outbound counts.
-3. Check if Bitcoin Core recently restarted (`peerobserver_rpc_uptime`) — a restart causes a temporary peer count drop.
-4. Look at connection age distribution in the RPC data — are all peers young (suggesting recent restart) or did established peers disconnect?
-5. Compare across other hosts to determine if this is node-specific.
-6. Conclude: with fewer than 8 peers the node is at risk of eclipse attacks and has reduced network visibility."#.into()
+3. Check the Debug Log section above for disconnect reasons — look for `socket closed`, `broken pipe`, `timeout`, or mass disconnect events that explain the peer count drop.
+4. Check if Bitcoin Core recently restarted (`peerobserver_rpc_uptime`) — a restart causes a temporary peer count drop.
+5. Look at connection age distribution in the RPC data — are all peers young (suggesting recent restart) or did established peers disconnect?
+6. Compare across other hosts to determine if this is node-specific.
+7. Conclude: with fewer than 8 peers the node is at risk of eclipse attacks and has reduced network visibility."#.into()
         }
 
         "PeerObserverNetworkInactive" => {
@@ -107,10 +110,11 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
         "PeerObserverMisbehaviorSpike" => {
             r#"1. Query `peerobserver_anomaly:level{anomaly_name="misbehavior_rate"}` and compare against `peerobserver_anomaly:upper_band` to confirm the spike.
 2. Check the RPC Data section above for per-peer details — review each peer's `addr`, `subver`, `conntime`, `network`, and `connection_type` to identify peers with elevated misbehavior scores.
-3. Cross-reference the Prometheus misbehavior metrics with the RPC peer list to narrow down which peer(s) are generating the misbehavior score by IP.
-4. For the peer(s) with elevated misbehavior, check their connection age and user agent — short-lived connections with unusual user agents are more notable.
-5. Compare across hosts — are other nodes seeing misbehavior from the same IP(s)?
-6. Conclude: determine if this is a protocol attack, a buggy node implementation, or an eclipse attempt. Document the peer IP(s), their user agents, and the specific misbehavior type for the observation record."#.into()
+3. Check the Debug Log section above for misbehavior details — look for `Misbehaving: peer N ...` lines that identify the specific protocol violation and the peer involved.
+4. Cross-reference the Prometheus misbehavior metrics with the RPC peer list to narrow down which peer(s) are generating the misbehavior score by IP.
+5. For the peer(s) with elevated misbehavior, check their connection age and user agent — short-lived connections with unusual user agents are more notable.
+6. Compare across hosts — are other nodes seeing misbehavior from the same IP(s)?
+7. Conclude: determine if this is a protocol attack, a buggy node implementation, or an eclipse attempt. Document the peer IP(s), their user agents, and the specific misbehavior type for the observation record."#.into()
         }
 
         // ── Performance / queue alerts ───────────────────────────────────
@@ -136,29 +140,32 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
         "PeerObserverBlockStale" => {
             r#"1. Query `peerobserver_validation_block_connected_latest_height` to confirm the current block height and when the last block was connected.
 2. Check the RPC Data section above — `getblockchaininfo` provides the current `blocks` height, `headers` height, `initialblockdownload` status, and `verificationprogress` directly from the node.
-3. Compare the RPC `blocks` vs `headers` — if headers are ahead of blocks, the node is still validating. If both are equal and match other hosts, this is a slow block interval.
-4. Check if other hosts are also stale — if all nodes are at the same height, this is likely a slow block interval rather than a node issue.
-5. If only this host is stale, check peer count and network connectivity — the node may be partitioned.
-6. Conclude: differentiate between a naturally slow block interval (no action needed) and a node that has fallen behind or been partitioned (action needed).
-7. SANITY CHECK: The alert start time tells you how long the stale condition has persisted. Cross-reference any duration claims against this. Convert all Prometheus timestamps to UTC before calculating durations."#.into()
+3. Check the Debug Log section above for block validation timing (`[bench]` lines) and compact block reconstruction details — these show whether blocks are being received but validation is slow.
+4. Compare the RPC `blocks` vs `headers` — if headers are ahead of blocks, the node is still validating. If both are equal and match other hosts, this is a slow block interval.
+5. Check if other hosts are also stale — if all nodes are at the same height, this is likely a slow block interval rather than a node issue.
+6. If only this host is stale, check peer count and network connectivity — the node may be partitioned.
+7. Conclude: differentiate between a naturally slow block interval (no action needed) and a node that has fallen behind or been partitioned (action needed).
+8. SANITY CHECK: The alert start time tells you how long the stale condition has persisted. Cross-reference any duration claims against this. Convert all Prometheus timestamps to UTC before calculating durations."#.into()
         }
 
         "PeerObserverBlockStaleCritical" => {
             r#"1. This is a CRITICAL alert — no new block connected in 2 hours. This is almost certainly a real problem.
 2. Check the RPC Data section above — `getblockchaininfo` provides the current `blocks` height, `headers` height, and `initialblockdownload` status directly from the node. If this data is missing, bitcoind may be unresponsive.
-3. Compare the RPC block height against other hosts via Prometheus — if others are ahead, this node is partitioned or stalled.
-4. Check peer count and network status — can the node reach peers at all?
-5. Check systemd service status via `node_systemd_unit_state` for bitcoind.
-6. Conclude: a 2-hour gap almost certainly indicates the node is partitioned, bitcoind has crashed, or disk I/O is completely stalled. Immediate operator action is required."#.into()
+3. Check the Debug Log section above for block validation timing and errors — look for `[bench]` lines showing slow validation, `[validation]` errors, or compact block reconstruction failures.
+4. Compare the RPC block height against other hosts via Prometheus — if others are ahead, this node is partitioned or stalled.
+5. Check peer count and network status — can the node reach peers at all?
+6. Check systemd service status via `node_systemd_unit_state` for bitcoind.
+7. Conclude: a 2-hour gap almost certainly indicates the node is partitioned, bitcoind has crashed, or disk I/O is completely stalled. Immediate operator action is required."#.into()
         }
 
         "PeerObserverBitcoinCoreRestart" => {
             r#"1. This is an INFO alert — Bitcoin Core has restarted. Check the RPC Data section above — the `uptime` value (in seconds) confirms exactly when the restart occurred.
-2. Check `getblockchaininfo` from the RPC data — verify `initialblockdownload` is false and `blocks` matches `headers` (no sync gap after restart).
-3. Look for correlated alerts — restarts often trigger PeerObserverInboundConnectionDrop and PeerObserverOutboundConnectionDrop temporarily.
-4. If RPC data shows `initialblockdownload: true`, the node is re-syncing — this is unexpected unless the datadir was corrupted.
-5. Verify the node is reconnecting to peers via Prometheus peer count metrics and the block height is advancing.
-6. Conclude: determine if this was a planned restart (no action) or unexpected crash (investigate further). Note any correlated alerts that should be expected during the reconnection window."#.into()
+2. Check the Debug Log section above for the startup sequence — look for initialization messages, bind/listen results, and initial peer connections that show the restart progressing normally.
+3. Check `getblockchaininfo` from the RPC data — verify `initialblockdownload` is false and `blocks` matches `headers` (no sync gap after restart).
+4. Look for correlated alerts — restarts often trigger PeerObserverInboundConnectionDrop and PeerObserverOutboundConnectionDrop temporarily.
+5. If RPC data shows `initialblockdownload: true`, the node is re-syncing — this is unexpected unless the datadir was corrupted.
+6. Verify the node is reconnecting to peers via Prometheus peer count metrics and the block height is advancing.
+7. Conclude: determine if this was a planned restart (no action) or unexpected crash (investigate further). Note any correlated alerts that should be expected during the reconnection window."#.into()
         }
 
         "PeerObserverNodeInIBD" => {
@@ -182,20 +189,22 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
         // ── Mempool alerts ───────────────────────────────────────────────
         "PeerObserverMempoolFull" => {
             r#"1. Check the RPC Data section above — `getmempoolinfo` provides the exact mempool `size` (tx count), `bytes`, `usage` (memory), `maxmempool`, and `mempoolminfee` directly from the node.
-2. Calculate the fill percentage from the RPC data: `usage / maxmempool * 100`. Check `mempoolminfee` — this is the minimum feerate for new transactions to be accepted.
-3. Query Prometheus for the trend — is mempool usage spiking suddenly or growing gradually?
-4. Compare across hosts — if all nodes have full mempools, this is a network-wide fee event.
-5. Check if this correlates with any unusual P2P message patterns (transaction flooding).
-6. Conclude: a full mempool is usually caused by high on-chain demand (fee market event) and is not actionable unless caused by spam. Note the current min feerate from the RPC data for context."#.into()
+2. Check the Debug Log section above for mempool rejection reasons — look for `[mempoolrej]` lines showing rejected transactions with fee data and rejection codes.
+3. Calculate the fill percentage from the RPC data: `usage / maxmempool * 100`. Check `mempoolminfee` — this is the minimum feerate for new transactions to be accepted.
+4. Query Prometheus for the trend — is mempool usage spiking suddenly or growing gradually?
+5. Compare across hosts — if all nodes have full mempools, this is a network-wide fee event.
+6. Check if this correlates with any unusual P2P message patterns (transaction flooding).
+7. Conclude: a full mempool is usually caused by high on-chain demand (fee market event) and is not actionable unless caused by spam. Note the current min feerate from the RPC data for context."#.into()
         }
 
         "PeerObserverMempoolEmpty" => {
             r#"1. Check the RPC Data section above — `getmempoolinfo` provides the exact mempool `size` (tx count) directly from the node to confirm it is truly empty.
-2. An empty mempool for 5+ minutes is very abnormal — the Bitcoin network constantly generates transactions.
-3. Check peer count — if the node has no peers, it can't receive transactions.
-4. Check if the node is in IBD — nodes in IBD don't accept mempool transactions.
-5. Compare across hosts — if other nodes have normal mempools, this node is likely disconnected or misconfigured.
-6. Conclude: an empty mempool almost always indicates the node is not receiving transactions, either due to network isolation, IBD, or a configuration issue like `-blocksonly` mode."#.into()
+2. Check the Debug Log section above for mempool-related events — look for `[mempool]` and `[mempoolrej]` lines that may explain why the mempool is empty (e.g., all transactions being rejected).
+3. An empty mempool for 5+ minutes is very abnormal — the Bitcoin network constantly generates transactions.
+4. Check peer count — if the node has no peers, it can't receive transactions.
+5. Check if the node is in IBD — nodes in IBD don't accept mempool transactions.
+6. Compare across hosts — if other nodes have normal mempools, this node is likely disconnected or misconfigured.
+7. Conclude: an empty mempool almost always indicates the node is not receiving transactions, either due to network isolation, IBD, or a configuration issue like `-blocksonly` mode."#.into()
         }
 
         // ── Infrastructure alerts ────────────────────────────────────────
@@ -244,10 +253,11 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
     Correlate the hot functions with the thread metrics — e.g., if b-scriptch threads are saturated
     and the top functions are script verification, that confirms block validation load.
 3. Check per-thread CPU saturation: query `sum by(threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname=~"b-msghand|b-net|b-addcon|b-opencon|b-scheduler|b-scriptch.*|bitcoind"}}[5m]))`. The `sum by(threadname)` collapses user+system CPU per thread. A value near 1.0 means that thread is using 100% of one CPU core. Thread roles: b-msghand (message processing — most common bottleneck during mass-broadcast), b-net (network I/O), b-addcon/b-opencon (connection management), b-scheduler (task scheduling), b-scriptch.N (script verification — CPU-intensive during block validation and catchup), bitcoind (main thread).
-4. Check if the node is in IBD — reference the pre-fetched `getblockchaininfo` RPC data (look for `initialblockdownload` field). High CPU during IBD is completely normal and expected.
-5. Check if there's a header-block gap — the node may be catching up on validation.
-6. Common causes: Bitcoin Core IBD (expected), heavy block validation after a long stale period, single-thread saturation during mass-broadcast events, or a runaway process.
-7. Conclude: determine if the high CPU is expected (IBD, catchup, known mass-broadcast) or unexpected (runaway process, bug). Only unexpected sustained high CPU requires action."#
+4. Check the Debug Log section above for correlated events — look for block validation (`[bench]`), message floods (`[net]`), or other activity that coincides with the CPU spike.
+5. Check if the node is in IBD — reference the pre-fetched `getblockchaininfo` RPC data (look for `initialblockdownload` field). High CPU during IBD is completely normal and expected.
+6. Check if there's a header-block gap — the node may be catching up on validation.
+7. Common causes: Bitcoin Core IBD (expected), heavy block validation after a long stale period, single-thread saturation during mass-broadcast events, or a runaway process.
+8. Conclude: determine if the high CPU is expected (IBD, catchup, known mass-broadcast) or unexpected (runaway process, bug). Only unexpected sustained high CPU requires action."#
             ).into()
         }
 
@@ -267,9 +277,10 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
     confirms block validation.
 2. Check IBD status via pre-fetched `getblockchaininfo` RPC data (look for the `initialblockdownload` field). Thread saturation during IBD is expected — all threads work harder during initial sync.
 3. Thread role context: b-msghand (message processing — the most common bottleneck; saturates during mass-broadcast events like large inv floods), b-net (network I/O — saturates under high peer count or bandwidth), b-addcon/b-opencon (connection management), b-scheduler (task scheduling), b-scriptch.N (script verification — CPU-intensive during block validation and catchup), bitcoind (main thread — typically low CPU outside startup).
-4. Check for correlated events: query message rates (`peerobserver_p2p_message_count`), block events (`peerobserver_validation_block_connected_latest_height`), and connection changes to identify what triggered the saturation.
-5. Cross-host comparison: query the same thread's CPU rate on other hosts to distinguish node-specific issues from network-wide events (e.g., mass-broadcast affects all nodes).
-6. Conclude: IBD or mass-broadcast thread saturation is expected and benign. Sustained saturation outside these contexts (especially b-msghand without correlated message spikes) needs investigation — it may indicate a stuck peer, consensus bug, or pathological message pattern."#
+4. Check the Debug Log section above for correlated events — look for block validation (`[bench]`), message floods (`[net]`), or other activity that coincides with the thread saturation.
+5. Check for correlated events: query message rates (`peerobserver_p2p_message_count`), block events (`peerobserver_validation_block_connected_latest_height`), and connection changes to identify what triggered the saturation.
+6. Cross-host comparison: query the same thread's CPU rate on other hosts to distinguish node-specific issues from network-wide events (e.g., mass-broadcast affects all nodes).
+7. Conclude: IBD or mass-broadcast thread saturation is expected and benign. Sustained saturation outside these contexts (especially b-msghand without correlated message spikes) needs investigation — it may indicate a stuck peer, consensus bug, or pathological message pattern."#
             ).into()
         }
 
@@ -422,6 +433,8 @@ mod tests {
             rpc_fetched_at: None,
             parca_context: String::new(),
             parca_fetched_at: None,
+            debug_log_context: String::new(),
+            debug_log_fetched_at: None,
         }
     }
 
@@ -868,6 +881,88 @@ mod tests {
             ..default_ctx()
         });
         assert!(prompt.contains("Profiling Data"));
+    }
+
+    // ── Debug log references in instructions ──────────────────────────
+
+    #[test]
+    fn connection_alert_instructions_reference_debug_log() {
+        for name in &[
+            "PeerObserverInboundConnectionDrop",
+            "PeerObserverOutboundConnectionDrop",
+            "PeerObserverTotalPeersDrop",
+        ] {
+            let prompt = build_investigation_prompt(&AlertContext {
+                alertname: (*name).into(),
+                ..default_ctx()
+            });
+            assert!(
+                prompt.contains("Debug Log"),
+                "instructions for {name} should reference Debug Log"
+            );
+        }
+    }
+
+    #[test]
+    fn misbehavior_instructions_reference_debug_log() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverMisbehaviorSpike".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Debug Log"));
+    }
+
+    #[test]
+    fn block_stale_instructions_reference_debug_log() {
+        for name in &["PeerObserverBlockStale", "PeerObserverBlockStaleCritical"] {
+            let prompt = build_investigation_prompt(&AlertContext {
+                alertname: (*name).into(),
+                ..default_ctx()
+            });
+            assert!(
+                prompt.contains("Debug Log"),
+                "instructions for {name} should reference Debug Log"
+            );
+        }
+    }
+
+    #[test]
+    fn restart_instructions_reference_debug_log() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverBitcoinCoreRestart".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Debug Log"));
+    }
+
+    #[test]
+    fn mempool_instructions_reference_debug_log() {
+        for name in &["PeerObserverMempoolFull", "PeerObserverMempoolEmpty"] {
+            let prompt = build_investigation_prompt(&AlertContext {
+                alertname: (*name).into(),
+                ..default_ctx()
+            });
+            assert!(
+                prompt.contains("Debug Log"),
+                "instructions for {name} should reference Debug Log"
+            );
+        }
+    }
+
+    #[test]
+    fn cpu_thread_instructions_reference_debug_log() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverHighCPU".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Debug Log"));
+
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverThreadSaturation".into(),
+            threadname: "b-msghand".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Debug Log"));
     }
 
     #[test]
