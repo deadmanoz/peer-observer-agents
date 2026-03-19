@@ -14,6 +14,8 @@ pub struct PreFetchData {
     pub rpc_fetched_at: Option<DateTime<Utc>>,
     pub parca_context: String,
     pub parca_fetched_at: Option<DateTime<Utc>>,
+    pub debug_log_context: String,
+    pub debug_log_fetched_at: Option<DateTime<Utc>>,
 }
 
 pub struct AlertContext {
@@ -35,6 +37,10 @@ pub struct AlertContext {
     pub parca_context: String,
     /// When the Parca data was actually fetched (None if no profiling data).
     pub parca_fetched_at: Option<DateTime<Utc>>,
+    /// Pre-fetched debug.log lines (empty if disabled, not applicable, or failed).
+    pub debug_log_context: String,
+    /// When the debug log data was actually fetched (None if no debug log data).
+    pub debug_log_fetched_at: Option<DateTime<Utc>>,
 }
 
 impl AlertContext {
@@ -80,6 +86,8 @@ impl AlertContext {
             rpc_fetched_at: prefetch.rpc_fetched_at,
             parca_context: prefetch.parca_context,
             parca_fetched_at: prefetch.parca_fetched_at,
+            debug_log_context: prefetch.debug_log_context,
+            debug_log_fetched_at: prefetch.debug_log_fetched_at,
         }
     }
 }

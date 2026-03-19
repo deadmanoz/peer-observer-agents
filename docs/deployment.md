@@ -76,6 +76,10 @@ All config via environment variables prefixed `ANNOTATION_AGENT_*`:
 | `ANNOTATION_AGENT_PARCA_PROFILE_TYPE` | (required if PARCA_HOSTS set) | Profile type query string (e.g., `process_cpu:samples:count:cpu:nanoseconds`) — deployment-specific, no safe default |
 | `ANNOTATION_AGENT_PARCA_PROCESS_FILTER` | (required if PARCA_HOSTS set) | Label selector to scope profiles to a specific process (e.g., `comm="bitcoind"`) |
 | `ANNOTATION_AGENT_PARCA_TOP_N` | `15` | Number of top functions to include in profiling data |
+| `ANNOTATION_AGENT_DEBUG_LOGS_ENABLED` | (disabled) | Set to `true` or `1` to enable debug log pre-fetch. Requires `RPC_HOSTS` (same WireGuard nginx endpoints). |
+| `ANNOTATION_AGENT_DEBUG_LOGS_MAX_BYTES` | `1048576` (1MB) | Max bytes to fetch from tail of debug.log via HTTP Range request |
+| `ANNOTATION_AGENT_DEBUG_LOGS_WINDOW_SECS` | `300` (5 min) | Seconds before alert start to begin log capture (extends through current time) |
+| `ANNOTATION_AGENT_DEBUG_LOGS_MAX_LINES` | `200` | Max filtered lines to include in prompt |
 
 ## Bitcoin Core RPC Pre-Fetch
 
@@ -128,3 +132,31 @@ The profiling data is injected into the investigation prompt as a `<profiling-da
 - `PARCA_HOSTS` set with malformed JSON, invalid URLs, or missing required vars: startup fails fast
 - `PARCA_PROCESS_FILTER` with valid Parca selector syntax: queries succeed at runtime
 - `PARCA_PROCESS_FILTER` with invalid selector syntax (but non-empty, no braces): passes startup validation but Parca returns an error at query time, logged as a warning — the investigation proceeds without profiling data
+
+## Debug Log Pre-Fetch
+
+When `ANNOTATION_AGENT_DEBUG_LOGS_ENABLED` is set to `true` or `1`, the agent fetches the tail of Bitcoin Core's `debug.log` file via HTTP Range request from the same WireGuard nginx endpoint used for RPC. This provides event narratives — disconnect reasons, misbehavior details, block validation timing, mempool rejection reasons — that are unavailable through Prometheus metrics or RPC snapshots.
+
+**Prerequisite:** The infra-library nginx configuration must serve the live `debug.log` at `/debug-log-live`. This is a separate infra-library change. If the endpoint is not deployed, the agent logs a warning and proceeds without debug log data.
+
+**Log format assumption:** The peer-observer infra-library configures Bitcoin Core with `logthreadnames=1` and `logtimemicros=1` (with `logsourcelocations=0`). This produces lines in the format `TIMESTAMP [THREAD] [CATEGORY] content`. Uncategorized Info-level messages produce one-bracket lines (`TIMESTAMP [THREAD] message`). The parser handles both formats.
+
+**Category mapping:** Each alert type maps to specific debug.log categories:
+- **Connection/P2P alerts**: `[net]`
+- **Chain health alerts** (BlockStale, BlockStaleCritical, HeaderBlockGap): `[validation]`, `[bench]`, `[cmpctblock]`
+- **IBD**: `[validation]`, `[bench]`
+- **Restart**: `[net]`, `[validation]`, plus uncategorized startup messages
+- **Mempool alerts**: `[mempool]`, `[mempoolrej]`
+- **CPU/thread alerts**: `[validation]`, `[bench]`, `[net]`
+- **Infrastructure/meta alerts**: no debug log fetch
+
+**Configuration:**
+- Requires `ANNOTATION_AGENT_RPC_HOSTS` — reuses the same host→IP mapping and nginx port
+- `DEBUG_LOGS_MAX_BYTES` controls how much of the file tail to fetch (default 1MB)
+- `DEBUG_LOGS_WINDOW_SECS` controls the time window before alert start (default 5 minutes, extends through current time)
+- `DEBUG_LOGS_MAX_LINES` caps filtered output (default 200 lines, tail-preference)
+
+**Startup behavior:**
+- `DEBUG_LOGS_ENABLED` unset or not `true`/`1`: feature disabled, no error
+- `DEBUG_LOGS_ENABLED` set without `RPC_HOSTS`: startup fails fast with an explanatory error
+- `DEBUG_LOGS_ENABLED` set with valid RPC config: feature enabled, logs a startup message

@@ -11,6 +11,8 @@ Alertmanager → POST /webhook → peer-observer-agent → [optional] Bitcoin Co
                                         │                     └──▶ Pre-fetched node data in prompt
                                         ├──▶ [optional] Parca API (CPU profiling)
                                         │         └──▶ Top CPU functions in prompt
+                                        ├──▶ [optional] debug.log (WireGuard nginx)
+                                        │         └──▶ Filtered log lines in prompt
                                         ├──▶ Claude CLI (--mcp-config) → Prometheus MCP → Prometheus API
                                         └──▶ Grafana Annotations API
 ```
@@ -36,6 +38,7 @@ nix build                      # Build via flake (Linux/CI)
 | `src/viewer/` | `/logs` and `/api/logs` — annotation log viewer |
 | `src/rpc/` | Bitcoin Core RPC client and response filtering |
 | `src/parca/` | Parca profiling API client, CPU profile pre-fetch for performance alerts |
+| `src/debug_logs/` | Debug log HTTP client, time/category filtering, pre-fetch for alert investigations |
 | `src/profiles/` | Peer profiles: SQLite DB, poller, `/peers` API and viewer |
 | `src/annotation.rs` | Structured annotation types, HTML rendering, peer-intervention policy guard |
 | `src/grafana.rs` | Grafana annotation API |

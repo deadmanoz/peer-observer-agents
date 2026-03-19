@@ -147,6 +147,17 @@ impl RpcClient {
         self.hosts.keys().cloned().collect()
     }
 
+    /// Returns a reference to the host→IP mapping for reuse by other modules
+    /// that access the same WireGuard nginx endpoints (e.g., debug log fetcher).
+    pub fn hosts(&self) -> &HashMap<String, std::net::IpAddr> {
+        &self.hosts
+    }
+
+    /// Returns the nginx webserver port (NODE_TO_WEBSERVER_PORT, default 9000).
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// Fetch raw getpeerinfo for a specific host. Returns unfiltered JSON array.
     pub async fn getpeerinfo_raw(&self, host: &str) -> Result<Value> {
         let ip = self

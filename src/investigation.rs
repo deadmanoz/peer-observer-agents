@@ -84,7 +84,12 @@ pub(crate) async fn call_claude(
         .to_string();
     let aid_str = aid.to_string();
 
-    let (recent, (rpc_context, rpc_fetched_at), (parca_context, parca_fetched_at)) = tokio::join!(
+    let (
+        recent,
+        (rpc_context, rpc_fetched_at),
+        (parca_context, parca_fetched_at),
+        (debug_log_context, debug_log_fetched_at),
+    ) = tokio::join!(
         fetch_recent_annotations(state, alert),
         async {
             match &state.rpc_client {
@@ -101,6 +106,16 @@ pub(crate) async fn call_claude(
                 }
                 None => (String::new(), None),
             }
+        },
+        async {
+            match &state.debug_log_client {
+                Some(client) => {
+                    client
+                        .prefetch(&host, &alertname, &aid_str, alert.starts_at)
+                        .await
+                }
+                None => (String::new(), None),
+            }
         }
     );
     let prior_context = format_prior_context(&recent);
@@ -111,6 +126,8 @@ pub(crate) async fn call_claude(
         rpc_fetched_at,
         parca_context,
         parca_fetched_at,
+        debug_log_context,
+        debug_log_fetched_at,
     };
     let ctx =
         AlertContext::from_alert(&alert.labels, &alert.annotations, alert.starts_at, prefetch);
