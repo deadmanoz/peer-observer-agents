@@ -4,7 +4,7 @@ use tracing::{info, warn};
 
 use crate::correlation::AlertId;
 use crate::grafana::{fetch_recent_annotations, format_prior_context};
-use crate::prompt::AlertContext;
+use crate::prompt::{AlertContext, PreFetchData};
 use crate::state::AppState;
 use crate::types::{Alert, ClaudeOutput};
 
@@ -67,8 +67,9 @@ pub(crate) async fn call_claude(
     alert: &Alert,
     aid: &AlertId,
 ) -> Result<ClaudeOutput> {
-    // Fetch prior annotations and RPC data concurrently — they're independent
-    // and can each take up to 30s (Grafana HTTP timeout) / 10s (RPC deadline).
+    // Fetch prior annotations, RPC data, and Parca profiles concurrently —
+    // they're independent and can each take up to 30s (Grafana HTTP timeout) /
+    // 10s (RPC deadline) / 10s (Parca deadline).
     let host = alert
         .labels
         .get("host")
@@ -83,23 +84,36 @@ pub(crate) async fn call_claude(
         .to_string();
     let aid_str = aid.to_string();
 
-    let (recent, (rpc_context, rpc_fetched_at)) =
-        tokio::join!(fetch_recent_annotations(state, alert), async {
+    let (recent, (rpc_context, rpc_fetched_at), (parca_context, parca_fetched_at)) = tokio::join!(
+        fetch_recent_annotations(state, alert),
+        async {
             match &state.rpc_client {
                 Some(rpc) => rpc.prefetch(&host, &alertname, &aid_str).await,
                 None => (String::new(), None),
             }
-        });
+        },
+        async {
+            match &state.parca_client {
+                Some(parca) => {
+                    parca
+                        .prefetch(&host, &alertname, &aid_str, alert.starts_at)
+                        .await
+                }
+                None => (String::new(), None),
+            }
+        }
+    );
     let prior_context = format_prior_context(&recent);
 
-    let ctx = AlertContext::from_alert(
-        &alert.labels,
-        &alert.annotations,
-        alert.starts_at,
+    let prefetch = PreFetchData {
         prior_context,
         rpc_context,
         rpc_fetched_at,
-    );
+        parca_context,
+        parca_fetched_at,
+    };
+    let ctx =
+        AlertContext::from_alert(&alert.labels, &alert.annotations, alert.starts_at, prefetch);
 
     info!(alert_id = %aid, "calling claude with MCP prometheus tools");
 

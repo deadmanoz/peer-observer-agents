@@ -3,6 +3,19 @@ use std::collections::HashMap;
 
 use super::sanitization::strip_control_chars;
 
+/// All pre-fetched data sources collected before Claude investigation.
+///
+/// Using a struct avoids a growing positional param list as new data sources
+/// are added. `Default` gives empty strings and `None` timestamps.
+#[derive(Default)]
+pub struct PreFetchData {
+    pub prior_context: String,
+    pub rpc_context: String,
+    pub rpc_fetched_at: Option<DateTime<Utc>>,
+    pub parca_context: String,
+    pub parca_fetched_at: Option<DateTime<Utc>>,
+}
+
 pub struct AlertContext {
     pub alertname: String,
     pub host: String,
@@ -18,6 +31,10 @@ pub struct AlertContext {
     pub rpc_context: String,
     /// When the RPC data was actually fetched (None if no RPC data).
     pub rpc_fetched_at: Option<DateTime<Utc>>,
+    /// Pre-fetched Parca CPU profiling data (empty if Parca disabled, not applicable, or failed).
+    pub parca_context: String,
+    /// When the Parca data was actually fetched (None if no profiling data).
+    pub parca_fetched_at: Option<DateTime<Utc>>,
 }
 
 impl AlertContext {
@@ -26,9 +43,7 @@ impl AlertContext {
         labels: &HashMap<String, String>,
         annotations: &Option<HashMap<String, String>>,
         starts_at: DateTime<Utc>,
-        prior_context: String,
-        rpc_context: String,
-        rpc_fetched_at: Option<DateTime<Utc>>,
+        prefetch: PreFetchData,
     ) -> Self {
         let get_ann = |key: &str, default: &str| -> String {
             annotations
@@ -60,9 +75,11 @@ impl AlertContext {
             description: get_ann("description", "No description provided."),
             dashboard: get_ann("dashboard", ""),
             runbook: get_ann("runbook", ""),
-            prior_context,
-            rpc_context,
-            rpc_fetched_at,
+            prior_context: prefetch.prior_context,
+            rpc_context: prefetch.rpc_context,
+            rpc_fetched_at: prefetch.rpc_fetched_at,
+            parca_context: prefetch.parca_context,
+            parca_fetched_at: prefetch.parca_fetched_at,
         }
     }
 }
@@ -92,9 +109,7 @@ mod tests {
             &labels,
             &Some(annotations),
             test_time(),
-            String::new(),
-            String::new(),
-            None,
+            PreFetchData::default(),
         );
         assert_eq!(ctx.alertname, "TestAlert");
         assert_eq!(ctx.host, "bitcoin-03");
@@ -108,14 +123,7 @@ mod tests {
     #[test]
     fn from_alert_defaults_missing_fields() {
         let labels = HashMap::new();
-        let ctx = AlertContext::from_alert(
-            &labels,
-            &None,
-            test_time(),
-            String::new(),
-            String::new(),
-            None,
-        );
+        let ctx = AlertContext::from_alert(&labels, &None, test_time(), PreFetchData::default());
         assert!(ctx.alertname.is_empty());
         assert_eq!(ctx.host, "unknown");
         assert_eq!(ctx.severity, "unknown");
@@ -129,28 +137,14 @@ mod tests {
         labels.insert("alertname".into(), "PeerObserverThreadSaturation".into());
         labels.insert("host".into(), "bitcoin-03".into());
         labels.insert("threadname".into(), "b-msghand".into());
-        let ctx = AlertContext::from_alert(
-            &labels,
-            &None,
-            test_time(),
-            String::new(),
-            String::new(),
-            None,
-        );
+        let ctx = AlertContext::from_alert(&labels, &None, test_time(), PreFetchData::default());
         assert_eq!(ctx.threadname, "b-msghand");
     }
 
     #[test]
     fn from_alert_defaults_threadname_to_empty() {
         let labels = HashMap::new();
-        let ctx = AlertContext::from_alert(
-            &labels,
-            &None,
-            test_time(),
-            String::new(),
-            String::new(),
-            None,
-        );
+        let ctx = AlertContext::from_alert(&labels, &None, test_time(), PreFetchData::default());
         assert!(ctx.threadname.is_empty());
     }
 }

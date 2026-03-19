@@ -72,6 +72,10 @@ All config via environment variables prefixed `ANNOTATION_AGENT_*`:
 | `ANNOTATION_AGENT_RPC_USER` | `rpc-extractor` | Bitcoin Core RPC username |
 | `ANNOTATION_AGENT_RPC_PASSWORD` | (required if RPC_HOSTS set) | Bitcoin Core RPC password |
 | `ANNOTATION_AGENT_RPC_PORT` | `9000` | Bitcoin Core RPC port (via WireGuard nginx proxy) |
+| `ANNOTATION_AGENT_PARCA_HOSTS` | (optional) | JSON map of host names to per-node Parca base URLs (e.g., `{"bitcoin-01":"http://10.0.0.1:9000/parca-server"}`). Unset = profiling pre-fetch disabled. |
+| `ANNOTATION_AGENT_PARCA_PROFILE_TYPE` | (required if PARCA_HOSTS set) | Profile type query string (e.g., `process_cpu:samples:count:cpu:nanoseconds`) — deployment-specific, no safe default |
+| `ANNOTATION_AGENT_PARCA_PROCESS_FILTER` | (required if PARCA_HOSTS set) | Label selector to scope profiles to a specific process (e.g., `comm="bitcoind"`) |
+| `ANNOTATION_AGENT_PARCA_TOP_N` | `15` | Number of top functions to include in profiling data |
 
 ## Bitcoin Core RPC Pre-Fetch
 
@@ -102,3 +106,25 @@ RPC responses are filtered per alert type to keep token cost low (e.g., `getpeer
 - `RPC_HOSTS` set with malformed JSON or missing `RPC_PASSWORD`: startup fails fast
 
 The NixOS module in infra-library will need to be updated to generate the `RPC_HOSTS` mapping from `config.infra.nodes` and pass RPC credentials. This is tracked as a separate follow-up.
+
+## Parca Profiling Pre-Fetch
+
+When `ANNOTATION_AGENT_PARCA_HOSTS` is set, the agent queries per-node Parca servers for top CPU functions during the alert window (±5 minutes around `startsAt`). This provides function-level diagnostic data that helps Claude correlate CPU spikes with specific code paths (e.g., "80% in `CConnman::AcceptConnection`").
+
+**v1 alert scope:** Only `PeerObserverHighCPU` and `PeerObserverThreadSaturation` alerts trigger profiling data pre-fetch. Other alert types do not query Parca.
+
+The profiling data is injected into the investigation prompt as a `<profiling-data>` section containing a formatted table of top functions with flat and cumulative CPU percentages. Function labels are sanitized for tag-boundary safety (angle brackets escaped, names truncated at 200 characters).
+
+**Configuration:**
+- `PARCA_HOSTS` is a JSON map: `{"bitcoin-01": "http://10.0.0.1:9000/parca-server", "bitcoin-03": "http://10.0.0.3:9000/parca-server"}` — maps alert host names to per-node Parca base URLs (via WireGuard nginx proxy)
+- `PARCA_PROFILE_TYPE` specifies the profile type to query (deployment-specific, e.g., `process_cpu:samples:count:cpu:nanoseconds`)
+- `PARCA_PROCESS_FILTER` is required to scope profiles to the correct process — each node's Parca agent collects from multiple executables, so the filter (e.g., `comm="bitcoind"`) ensures only Bitcoin Core profiles are returned
+- Host names must match the `host` label in Alertmanager alerts
+- If Parca is unreachable, returns empty data, or the host is unmapped, the investigation proceeds without profiling data
+
+**Startup behavior:**
+- `PARCA_HOSTS` unset: profiling feature disabled, no error
+- `PARCA_HOSTS` set with valid config + required vars: profiling feature enabled
+- `PARCA_HOSTS` set with malformed JSON, invalid URLs, or missing required vars: startup fails fast
+- `PARCA_PROCESS_FILTER` with valid Parca selector syntax: queries succeed at runtime
+- `PARCA_PROCESS_FILTER` with invalid selector syntax (but non-empty, no braces): passes startup validation but Parca returns an error at query time, logged as a warning — the investigation proceeds without profiling data

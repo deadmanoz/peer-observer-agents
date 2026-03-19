@@ -9,6 +9,8 @@ Single Rust binary that receives Alertmanager webhooks, dispatches Claude Code C
 ```
 Alertmanager → POST /webhook → peer-observer-agent → [optional] Bitcoin Core RPC (WireGuard)
                                         │                     └──▶ Pre-fetched node data in prompt
+                                        ├──▶ [optional] Parca API (CPU profiling)
+                                        │         └──▶ Top CPU functions in prompt
                                         ├──▶ Claude CLI (--mcp-config) → Prometheus MCP → Prometheus API
                                         └──▶ Grafana Annotations API
 ```
@@ -33,6 +35,7 @@ nix build                      # Build via flake (Linux/CI)
 | `src/prompt/` | Investigation prompt generation, sanitization, fast-path |
 | `src/viewer/` | `/logs` and `/api/logs` — annotation log viewer |
 | `src/rpc/` | Bitcoin Core RPC client and response filtering |
+| `src/parca/` | Parca profiling API client, CPU profile pre-fetch for performance alerts |
 | `src/profiles/` | Peer profiles: SQLite DB, poller, `/peers` API and viewer |
 | `src/annotation.rs` | Structured annotation types, HTML rendering, peer-intervention policy guard |
 | `src/grafana.rs` | Grafana annotation API |
