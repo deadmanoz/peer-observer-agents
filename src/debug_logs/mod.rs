@@ -84,21 +84,23 @@ impl DebugLogClient {
         })
     }
 
-    /// Pre-fetch debug log lines relevant to an alert, returning formatted context.
+    /// Pre-fetch debug log lines relevant to an alert, returning a context section.
     ///
     /// On any failure (host not mapped, HTTP error, timeout), logs a warning and
-    /// returns an empty string — the investigation proceeds without debug log data.
+    /// returns `None` — the investigation proceeds without debug log data.
     pub async fn prefetch(
         &self,
         host: &str,
         alertname: &str,
         alert_id: &str,
         alert_started: DateTime<Utc>,
-    ) -> (String, Option<DateTime<Utc>>) {
+    ) -> Option<crate::context::ContextSection> {
+        use crate::context::{ContextKind, ContextSection, SanitizedBody, SanitizedLabel};
+
         // Guard: skip alerts where debug log categories are empty
         let filter = log_filter_for_alert(alertname);
         if filter.categories.is_empty() && !filter.include_uncategorized {
-            return (String::new(), None);
+            return None;
         }
 
         let ip = match self.hosts.get(host) {
@@ -109,7 +111,7 @@ impl DebugLogClient {
                     host = host,
                     "host not in RPC_HOSTS mapping, skipping debug log prefetch"
                 );
-                return (String::new(), None);
+                return None;
             }
         };
 
@@ -122,15 +124,26 @@ impl DebugLogClient {
         .await;
 
         match result {
-            Ok(Ok(filtered)) if !filtered.is_empty() => (filtered, Some(fetched_at)),
-            Ok(Ok(_)) => (String::new(), None),
+            Ok(Ok(filtered)) if !filtered.is_empty() => Some(ContextSection {
+                kind: ContextKind::DebugLog,
+                heading: "Debug Log".into(),
+                source_label: Some(SanitizedLabel::new(host)),
+                intro: "Lines from Bitcoin Core debug.log around the alert start time,\n\
+                        filtered to log categories relevant to this alert type.\n\
+                        Use these to understand the sequence of events leading up to the alert."
+                    .into(),
+                xml_tag: "debug-log-data".into(),
+                body: SanitizedBody::new(filtered),
+                fetched_at,
+            }),
+            Ok(Ok(_)) => None,
             Ok(Err(e)) => {
                 warn!(
                     alert_id = alert_id,
                     host = host,
                     "debug log fetch failed, proceeding without debug log data: {e:#}"
                 );
-                (String::new(), None)
+                None
             }
             Err(_) => {
                 warn!(
@@ -139,7 +152,7 @@ impl DebugLogClient {
                     "debug log prefetch timed out after {:?}, proceeding without debug log data",
                     DEBUG_LOG_PREFETCH_DEADLINE
                 );
-                (String::new(), None)
+                None
             }
         }
     }
@@ -326,7 +339,7 @@ mod tests {
         )
         .unwrap();
 
-        let (result, ts) = client
+        let result = client
             .prefetch(
                 "bitcoin-03",
                 "PeerObserverServiceFailed",
@@ -334,8 +347,7 @@ mod tests {
                 Utc::now(),
             )
             .await;
-        assert!(result.is_empty());
-        assert!(ts.is_none());
+        assert!(result.is_none());
     }
 
     #[tokio::test]
@@ -349,7 +361,7 @@ mod tests {
         )
         .unwrap();
 
-        let (result, ts) = client
+        let result = client
             .prefetch(
                 "unknown-host",
                 "PeerObserverBlockStale",
@@ -357,12 +369,11 @@ mod tests {
                 Utc::now(),
             )
             .await;
-        assert!(result.is_empty());
-        assert!(ts.is_none());
+        assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn prefetch_returns_empty_on_connection_error() {
+    async fn prefetch_returns_none_on_connection_error() {
         let client = DebugLogClient::new(
             valid_hosts(),
             19999, // unreachable port
@@ -372,7 +383,7 @@ mod tests {
         )
         .unwrap();
 
-        let (result, ts) = client
+        let result = client
             .prefetch(
                 "bitcoin-03",
                 "PeerObserverBlockStale",
@@ -380,8 +391,7 @@ mod tests {
                 Utc::now(),
             )
             .await;
-        assert!(result.is_empty());
-        assert!(ts.is_none());
+        assert!(result.is_none());
     }
 
     // ── HTTP fetch tests (local axum server) ──────────────────────────
@@ -432,11 +442,12 @@ mod tests {
         let (hosts, port) = localhost_hosts(port);
         let client = DebugLogClient::new(hosts, port, DEFAULT_TAIL_BYTES, 300, 200).unwrap();
 
-        let (result, fetched_at) = client
+        let section = client
             .prefetch("test-node", "PeerObserverBlockStale", "test-id", Utc::now())
             .await;
 
-        assert!(fetched_at.is_some(), "should have a fetched_at timestamp");
+        let section = section.expect("should return a context section");
+        let result = section.body.as_str();
         assert!(
             result.contains("block connected"),
             "200 response should include first line"
@@ -465,11 +476,12 @@ mod tests {
         let (hosts, port) = localhost_hosts(port);
         let client = DebugLogClient::new(hosts, port, DEFAULT_TAIL_BYTES, 300, 200).unwrap();
 
-        let (result, fetched_at) = client
+        let section = client
             .prefetch("test-node", "PeerObserverBlockStale", "test-id", Utc::now())
             .await;
 
-        assert!(fetched_at.is_some());
+        let section = section.expect("should return a context section");
+        let result = section.body.as_str();
         assert!(
             !result.contains("artial fragment"),
             "206 should skip the partial first line"
@@ -498,11 +510,12 @@ mod tests {
         let (hosts, port) = localhost_hosts(port);
         let client = DebugLogClient::new(hosts, port, DEFAULT_TAIL_BYTES, 300, 200).unwrap();
 
-        let (result, fetched_at) = client
+        let section = client
             .prefetch("test-node", "PeerObserverBlockStale", "test-id", Utc::now())
             .await;
 
-        assert!(fetched_at.is_some());
+        let section = section.expect("should return a context section");
+        let result = section.body.as_str();
         assert!(
             result.contains("first complete line"),
             "206 on line boundary should keep first line (has valid timestamp)"
@@ -511,17 +524,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_non_2xx_returns_empty() {
+    async fn fetch_non_2xx_returns_none() {
         let port = start_test_server(axum::http::StatusCode::NOT_FOUND, "not found").await;
         let (hosts, port) = localhost_hosts(port);
         let client = DebugLogClient::new(hosts, port, DEFAULT_TAIL_BYTES, 300, 200).unwrap();
 
-        let (result, fetched_at) = client
+        let section = client
             .prefetch("test-node", "PeerObserverBlockStale", "test-id", Utc::now())
             .await;
 
-        assert!(result.is_empty(), "non-2xx should return empty");
-        assert!(fetched_at.is_none());
+        assert!(section.is_none(), "non-2xx should return None");
     }
 
     #[tokio::test]

@@ -1,21 +1,17 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-use super::sanitization::strip_control_chars;
+use crate::context::ContextSection;
+use crate::sanitization::strip_control_chars;
 
 /// All pre-fetched data sources collected before Claude investigation.
 ///
 /// Using a struct avoids a growing positional param list as new data sources
-/// are added. `Default` gives empty strings and `None` timestamps.
+/// are added.
 #[derive(Default)]
 pub struct PreFetchData {
     pub prior_context: String,
-    pub rpc_context: String,
-    pub rpc_fetched_at: Option<DateTime<Utc>>,
-    pub parca_context: String,
-    pub parca_fetched_at: Option<DateTime<Utc>>,
-    pub debug_log_context: String,
-    pub debug_log_fetched_at: Option<DateTime<Utc>>,
+    pub sections: Vec<ContextSection>,
 }
 
 pub struct AlertContext {
@@ -29,18 +25,8 @@ pub struct AlertContext {
     pub dashboard: String,
     pub runbook: String,
     pub prior_context: String,
-    /// Pre-fetched Bitcoin Core RPC data for the alert's host (empty if RPC disabled or failed).
-    pub rpc_context: String,
-    /// When the RPC data was actually fetched (None if no RPC data).
-    pub rpc_fetched_at: Option<DateTime<Utc>>,
-    /// Pre-fetched Parca CPU profiling data (empty if Parca disabled, not applicable, or failed).
-    pub parca_context: String,
-    /// When the Parca data was actually fetched (None if no profiling data).
-    pub parca_fetched_at: Option<DateTime<Utc>>,
-    /// Pre-fetched debug.log lines (empty if disabled, not applicable, or failed).
-    pub debug_log_context: String,
-    /// When the debug log data was actually fetched (None if no debug log data).
-    pub debug_log_fetched_at: Option<DateTime<Utc>>,
+    /// Pre-fetched context sections (RPC, profiling, debug log, etc.).
+    pub sections: Vec<ContextSection>,
 }
 
 impl AlertContext {
@@ -82,12 +68,28 @@ impl AlertContext {
             dashboard: get_ann("dashboard", ""),
             runbook: get_ann("runbook", ""),
             prior_context: prefetch.prior_context,
-            rpc_context: prefetch.rpc_context,
-            rpc_fetched_at: prefetch.rpc_fetched_at,
-            parca_context: prefetch.parca_context,
-            parca_fetched_at: prefetch.parca_fetched_at,
-            debug_log_context: prefetch.debug_log_context,
-            debug_log_fetched_at: prefetch.debug_log_fetched_at,
+            sections: prefetch.sections,
+        }
+    }
+}
+
+#[cfg(test)]
+impl AlertContext {
+    /// Standard test context for prompt unit tests.
+    pub(super) fn test_default() -> Self {
+        Self {
+            alertname: "TestAlert".into(),
+            host: "host".into(),
+            threadname: String::new(),
+            severity: "warning".into(),
+            category: "connections".into(),
+            started: chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2025, 6, 15, 12, 0, 0)
+                .unwrap(),
+            description: "desc".into(),
+            dashboard: String::new(),
+            runbook: String::new(),
+            prior_context: String::new(),
+            sections: vec![],
         }
     }
 }
@@ -95,10 +97,9 @@ impl AlertContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
 
     fn test_time() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2025, 6, 15, 12, 0, 0).unwrap()
+        AlertContext::test_default().started
     }
 
     #[test]

@@ -212,25 +212,24 @@ impl ParcaClient {
 
     /// Whether profiling data should be fetched for this alert type.
     fn should_fetch_profile(alertname: &str) -> bool {
-        matches!(
-            alertname,
-            "PeerObserverHighCPU" | "PeerObserverThreadSaturation"
-        )
+        crate::alerts::KnownAlert::parse(alertname).is_some_and(|a| a.spec().profiling.is_some())
     }
 
-    /// Pre-fetch CPU profiling data for an alert, returning formatted context.
+    /// Pre-fetch CPU profiling data for an alert, returning a context section.
     ///
     /// On any failure (host not mapped, API unreachable, timeout), logs a warning
-    /// and returns an empty string — the investigation proceeds without profiling data.
+    /// and returns `None` — the investigation proceeds without profiling data.
     pub async fn prefetch(
         &self,
         host: &str,
         alertname: &str,
         alert_id: &str,
         alert_started: DateTime<Utc>,
-    ) -> (String, Option<DateTime<Utc>>) {
+    ) -> Option<crate::context::ContextSection> {
+        use crate::context::{ContextKind, ContextSection, SanitizedBody, SanitizedLabel};
+
         if !Self::should_fetch_profile(alertname) {
-            return (String::new(), None);
+            return None;
         }
 
         let base_url = match self.hosts.get(host) {
@@ -241,7 +240,7 @@ impl ParcaClient {
                     host = host,
                     "host not in PARCA_HOSTS mapping, skipping profiling prefetch"
                 );
-                return (String::new(), None);
+                return None;
             }
         };
 
@@ -254,15 +253,25 @@ impl ParcaClient {
         .await;
 
         match result {
-            Ok(Ok(formatted)) if !formatted.is_empty() => (formatted, Some(fetched_at)),
-            Ok(Ok(_)) => (String::new(), None),
+            Ok(Ok(formatted)) if !formatted.is_empty() => Some(ContextSection {
+                kind: ContextKind::Profiling,
+                heading: "Profiling Data".into(),
+                source_label: Some(SanitizedLabel::new(host)),
+                intro: "CPU profile for the 10-minute window around alert start.\n\
+                        Use this to identify which functions are consuming the most CPU."
+                    .into(),
+                xml_tag: "profiling-data".into(),
+                body: SanitizedBody::new(formatted),
+                fetched_at,
+            }),
+            Ok(Ok(_)) => None,
             Ok(Err(e)) => {
                 warn!(
                     alert_id = alert_id,
                     host = host,
                     "Parca query failed, proceeding without profiling data: {e:#}"
                 );
-                (String::new(), None)
+                None
             }
             Err(_) => {
                 warn!(
@@ -271,7 +280,7 @@ impl ParcaClient {
                     "Parca prefetch timed out after {:?}, proceeding without profiling data",
                     PARCA_PREFETCH_DEADLINE
                 );
-                (String::new(), None)
+                None
             }
         }
     }
@@ -386,20 +395,18 @@ mod tests {
     // ── should_fetch_profile ──────────────────────────────────────────
 
     #[test]
-    fn high_cpu_should_fetch() {
-        assert!(ParcaClient::should_fetch_profile("PeerObserverHighCPU"));
-    }
+    fn every_known_alert_has_consistent_profiling_decision() {
+        use crate::alerts::KnownAlert;
 
-    #[test]
-    fn thread_saturation_should_fetch() {
-        assert!(ParcaClient::should_fetch_profile(
-            "PeerObserverThreadSaturation"
-        ));
-    }
-
-    #[test]
-    fn block_stale_should_not_fetch() {
-        assert!(!ParcaClient::should_fetch_profile("PeerObserverBlockStale"));
+        for alert in KnownAlert::ALL {
+            let expected = alert.spec().profiling.is_some();
+            let actual = ParcaClient::should_fetch_profile(alert.as_str());
+            assert_eq!(
+                actual, expected,
+                "should_fetch_profile mismatch for {:?}",
+                alert
+            );
+        }
     }
 
     #[test]

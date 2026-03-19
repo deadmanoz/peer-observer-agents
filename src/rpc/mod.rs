@@ -167,17 +167,19 @@ impl RpcClient {
         self.call(*ip, "getpeerinfo").await
     }
 
-    /// Pre-fetch all relevant RPC data for an alert, returning formatted context.
+    /// Pre-fetch all relevant RPC data for an alert, returning a context section.
     ///
     /// Calls are fanned out concurrently with an overall deadline. On any failure
     /// (host not mapped, RPC unreachable, timeout), logs a warning and returns
-    /// an empty string — the investigation proceeds with Prometheus only.
+    /// `None` — the investigation proceeds with Prometheus only.
     pub async fn prefetch(
         &self,
         host: &str,
         alertname: &str,
         alert_id: &str,
-    ) -> (String, Option<chrono::DateTime<chrono::Utc>>) {
+    ) -> Option<crate::context::ContextSection> {
+        use crate::context::{ContextKind, ContextSection, SanitizedBody, SanitizedLabel};
+
         let host_ip = match self.hosts.get(host) {
             Some(&ip) => ip,
             None => {
@@ -186,13 +188,13 @@ impl RpcClient {
                     host = host,
                     "host not in RPC_HOSTS mapping, skipping RPC prefetch"
                 );
-                return (String::new(), None);
+                return None;
             }
         };
 
         let methods = rpc_methods_for_alert(alertname);
         if methods.is_empty() {
-            return (String::new(), None);
+            return None;
         }
 
         // Record timestamp before fetching so the prompt header reflects when
@@ -207,8 +209,19 @@ impl RpcClient {
         .await;
 
         match result {
-            Ok(sections) if !sections.is_empty() => (sections, Some(fetched_at)),
-            Ok(_) => (String::new(), None),
+            Ok(sections) if !sections.is_empty() => Some(ContextSection {
+                kind: ContextKind::Rpc,
+                heading: "RPC Data".into(),
+                source_label: Some(SanitizedLabel::new(host)),
+                intro: "The following data was pre-fetched from the Bitcoin Core node via RPC.\n\
+                        Use it to identify specific peers, confirm node state, or correlate with\n\
+                        Prometheus metrics. For current values, use the Prometheus MCP tools."
+                    .into(),
+                xml_tag: "rpc-data".into(),
+                body: SanitizedBody::new(sections),
+                fetched_at,
+            }),
+            Ok(_) => None,
             Err(_) => {
                 warn!(
                     alert_id = alert_id,
@@ -216,7 +229,7 @@ impl RpcClient {
                     "RPC prefetch timed out after {:?}, proceeding without RPC data",
                     RPC_PREFETCH_DEADLINE
                 );
-                (String::new(), None)
+                None
             }
         }
     }
@@ -271,153 +284,30 @@ impl RpcClient {
 /// Returns the RPC methods to prefetch for a given alert name.
 /// Infrastructure/meta alerts return an empty list (no Bitcoin Core RPC needed).
 fn rpc_methods_for_alert(alertname: &str) -> Vec<&'static str> {
-    match alertname {
-        // P2P message alerts — need peer details
-        "PeerObserverAddressMessageSpike" | "PeerObserverMisbehaviorSpike" => {
-            vec!["getpeerinfo"]
-        }
-
-        // Connection alerts — need peers + network state
-        "PeerObserverInboundConnectionDrop"
-        | "PeerObserverOutboundConnectionDrop"
-        | "PeerObserverTotalPeersDrop" => {
-            vec!["getpeerinfo", "getnetworkinfo"]
-        }
-
-        // Network inactive — only need network state
-        "PeerObserverNetworkInactive" => vec!["getnetworkinfo"],
-
-        // Queue depth alerts — need peer details
-        "PeerObserverINVQueueDepthAnomaly" | "PeerObserverINVQueueDepthExtreme" => {
-            vec!["getpeerinfo"]
-        }
-
-        // Chain health alerts — need blockchain state
-        "PeerObserverBlockStale"
-        | "PeerObserverBlockStaleCritical"
-        | "PeerObserverNodeInIBD"
-        | "PeerObserverHeaderBlockGap" => {
-            vec!["getblockchaininfo"]
-        }
-
-        // Restart — need uptime + blockchain state
-        "PeerObserverBitcoinCoreRestart" => vec!["getblockchaininfo", "uptime"],
-
-        // Mempool alerts — need mempool state
-        "PeerObserverMempoolFull" | "PeerObserverMempoolEmpty" => vec!["getmempoolinfo"],
-
-        // CPU/thread alerts — need blockchain state for IBD correlation
-        "PeerObserverHighCPU" | "PeerObserverThreadSaturation" => vec!["getblockchaininfo"],
-
-        // Infrastructure/meta alerts — no Bitcoin Core RPC needed
-        "PeerObserverServiceFailed"
-        | "PeerObserverMetricsToolDown"
-        | "PeerObserverDiskSpaceLow"
-        | "PeerObserverHighMemory"
-        | "PeerObserverAnomalyDetectionDown" => vec![],
-
-        // Unknown alerts — no prefetch
-        _ => vec![],
+    match crate::alerts::KnownAlert::parse(alertname) {
+        Some(alert) => alert.spec().rpc.methods.to_vec(),
+        None => vec![],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alerts::KnownAlert;
 
     // ── rpc_methods_for_alert ─────────────────────────────────────────
 
     #[test]
-    fn addr_spike_needs_getpeerinfo() {
-        let methods = rpc_methods_for_alert("PeerObserverAddressMessageSpike");
-        assert_eq!(methods, vec!["getpeerinfo"]);
-    }
-
-    #[test]
-    fn misbehavior_spike_needs_getpeerinfo() {
-        let methods = rpc_methods_for_alert("PeerObserverMisbehaviorSpike");
-        assert_eq!(methods, vec!["getpeerinfo"]);
-    }
-
-    #[test]
-    fn connection_drops_need_peerinfo_and_netinfo() {
-        for alert in &[
-            "PeerObserverInboundConnectionDrop",
-            "PeerObserverOutboundConnectionDrop",
-            "PeerObserverTotalPeersDrop",
-        ] {
-            let methods = rpc_methods_for_alert(alert);
+    fn every_known_alert_has_consistent_rpc_methods() {
+        for alert in KnownAlert::ALL {
+            let expected = alert.spec().rpc.methods;
+            let actual = rpc_methods_for_alert(alert.as_str());
             assert_eq!(
-                methods,
-                vec!["getpeerinfo", "getnetworkinfo"],
-                "for {alert}"
+                actual.as_slice(),
+                expected,
+                "rpc_methods_for_alert mismatch for {:?}",
+                alert
             );
-        }
-    }
-
-    #[test]
-    fn network_inactive_needs_netinfo() {
-        let methods = rpc_methods_for_alert("PeerObserverNetworkInactive");
-        assert_eq!(methods, vec!["getnetworkinfo"]);
-    }
-
-    #[test]
-    fn inv_queue_alerts_need_peerinfo() {
-        for alert in &[
-            "PeerObserverINVQueueDepthAnomaly",
-            "PeerObserverINVQueueDepthExtreme",
-        ] {
-            let methods = rpc_methods_for_alert(alert);
-            assert_eq!(methods, vec!["getpeerinfo"], "for {alert}");
-        }
-    }
-
-    #[test]
-    fn chain_health_alerts_need_blockchaininfo() {
-        for alert in &[
-            "PeerObserverBlockStale",
-            "PeerObserverBlockStaleCritical",
-            "PeerObserverNodeInIBD",
-            "PeerObserverHeaderBlockGap",
-        ] {
-            let methods = rpc_methods_for_alert(alert);
-            assert_eq!(methods, vec!["getblockchaininfo"], "for {alert}");
-        }
-    }
-
-    #[test]
-    fn restart_needs_blockchaininfo_and_uptime() {
-        let methods = rpc_methods_for_alert("PeerObserverBitcoinCoreRestart");
-        assert_eq!(methods, vec!["getblockchaininfo", "uptime"]);
-    }
-
-    #[test]
-    fn mempool_alerts_need_mempoolinfo() {
-        for alert in &["PeerObserverMempoolFull", "PeerObserverMempoolEmpty"] {
-            let methods = rpc_methods_for_alert(alert);
-            assert_eq!(methods, vec!["getmempoolinfo"], "for {alert}");
-        }
-    }
-
-    #[test]
-    fn cpu_thread_alerts_need_blockchaininfo() {
-        for alert in &["PeerObserverHighCPU", "PeerObserverThreadSaturation"] {
-            let methods = rpc_methods_for_alert(alert);
-            assert_eq!(methods, vec!["getblockchaininfo"], "for {alert}");
-        }
-    }
-
-    #[test]
-    fn infrastructure_alerts_need_no_rpc() {
-        for alert in &[
-            "PeerObserverServiceFailed",
-            "PeerObserverMetricsToolDown",
-            "PeerObserverDiskSpaceLow",
-            "PeerObserverHighMemory",
-            "PeerObserverAnomalyDetectionDown",
-        ] {
-            let methods = rpc_methods_for_alert(alert);
-            assert!(methods.is_empty(), "{alert} should need no RPC");
         }
     }
 

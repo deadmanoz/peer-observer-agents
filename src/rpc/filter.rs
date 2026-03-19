@@ -1,4 +1,4 @@
-use crate::prompt::sanitize as sanitize_for_prompt;
+use crate::sanitization::sanitize as sanitize_for_prompt;
 use serde_json::Value;
 
 /// Filter an RPC response to only the fields relevant for the given alert type.
@@ -22,51 +22,9 @@ pub(super) fn filter_rpc_response(alertname: &str, method: &str, data: &Value) -
 
 /// Returns the getpeerinfo fields to keep for a given alert type.
 fn peer_info_fields_for_alert(alertname: &str) -> Vec<&'static str> {
-    match alertname {
-        "PeerObserverAddressMessageSpike" => vec![
-            "id",
-            "addr",
-            "network",
-            "subver",
-            "conntime",
-            "addr_rate_limited",
-            "bytesrecv_per_msg",
-            "connection_type",
-            "inbound",
-        ],
-        "PeerObserverMisbehaviorSpike" => vec![
-            "id",
-            "addr",
-            "network",
-            "subver",
-            "conntime",
-            "connection_type",
-            "inbound",
-        ],
-        "PeerObserverInboundConnectionDrop"
-        | "PeerObserverOutboundConnectionDrop"
-        | "PeerObserverTotalPeersDrop" => vec![
-            "id",
-            "addr",
-            "network",
-            "subver",
-            "conntime",
-            "connection_type",
-            "inbound",
-        ],
-        "PeerObserverINVQueueDepthAnomaly" | "PeerObserverINVQueueDepthExtreme" => vec![
-            "id",
-            "addr",
-            "network",
-            "subver",
-            "conntime",
-            "inbound",
-            "lastrecv",
-            "lastsend",
-            "bytessent_per_msg",
-            "connection_type",
-        ],
-        _ => vec![
+    match crate::alerts::KnownAlert::parse(alertname) {
+        Some(alert) => alert.spec().rpc.peer_info_fields.to_vec(),
+        None => vec![
             "id",
             "addr",
             "network",
@@ -159,12 +117,9 @@ fn filter_peer_info(data: &Value, fields: &[&str], alertname: &str) -> String {
 /// Returns the per-message byte counter keys to keep for an alert type.
 /// Empty means keep all keys (no filtering).
 fn per_msg_keys_for_alert(alertname: &str) -> Vec<&'static str> {
-    match alertname {
-        "PeerObserverAddressMessageSpike" => vec!["addr"],
-        "PeerObserverINVQueueDepthAnomaly" | "PeerObserverINVQueueDepthExtreme" => {
-            vec!["inv", "tx", "getdata"]
-        }
-        _ => vec![], // Keep all
+    match crate::alerts::KnownAlert::parse(alertname) {
+        Some(alert) => alert.spec().rpc.per_msg_keys.to_vec(),
+        None => vec![],
     }
 }
 
@@ -385,6 +340,54 @@ mod tests {
         let result = filter_peer_info(&data, &fields, "UnknownAlert");
         // Should fall back to pretty-printing the raw value
         assert!(result.contains("not an array"));
+    }
+
+    // ── relational consistency with alert catalog ─────────────────────
+
+    #[test]
+    fn every_known_alert_has_consistent_peer_info_fields() {
+        use crate::alerts::KnownAlert;
+        for alert in KnownAlert::ALL {
+            let expected = alert.spec().rpc.peer_info_fields;
+            let actual = peer_info_fields_for_alert(alert.as_str());
+            assert_eq!(
+                actual.as_slice(),
+                expected,
+                "peer_info_fields_for_alert mismatch for {:?}",
+                alert
+            );
+        }
+    }
+
+    #[test]
+    fn every_known_alert_has_consistent_per_msg_keys() {
+        use crate::alerts::KnownAlert;
+        for alert in KnownAlert::ALL {
+            let expected = alert.spec().rpc.per_msg_keys;
+            let actual = per_msg_keys_for_alert(alert.as_str());
+            assert_eq!(
+                actual.as_slice(),
+                expected,
+                "per_msg_keys_for_alert mismatch for {:?}",
+                alert
+            );
+        }
+    }
+
+    #[test]
+    fn alerts_with_getpeerinfo_have_nonempty_peer_info_fields() {
+        use crate::alerts::KnownAlert;
+        for alert in KnownAlert::ALL {
+            let spec = alert.spec();
+            if spec.rpc.methods.contains(&"getpeerinfo") {
+                assert!(
+                    !spec.rpc.peer_info_fields.is_empty(),
+                    "{:?} has getpeerinfo in rpc.methods but empty peer_info_fields — \
+                     this would cause filter_peer_info to return all fields unfiltered",
+                    alert
+                );
+            }
+        }
     }
 
     // ── filter_rpc_response routing ───────────────────────────────────

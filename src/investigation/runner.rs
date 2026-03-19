@@ -3,13 +3,12 @@ use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::correlation::AlertId;
-use crate::grafana::{fetch_recent_annotations, format_prior_context};
-use crate::prompt::{AlertContext, PreFetchData};
+use crate::prompt::AlertContext;
 use crate::state::AppState;
-use crate::types::{Alert, ClaudeOutput};
+use crate::types::ClaudeOutput;
 
 /// Parse Claude CLI JSON output into structured telemetry.
-pub(crate) fn parse_claude_output(raw: &str) -> Result<ClaudeOutput> {
+fn parse_claude_output(raw: &str) -> Result<ClaudeOutput> {
     let json: serde_json::Value =
         serde_json::from_str(raw).context("failed to parse claude JSON output")?;
 
@@ -58,80 +57,14 @@ pub(crate) fn parse_claude_output(raw: &str) -> Result<ClaudeOutput> {
     })
 }
 
-/// Call the Claude Code CLI with Prometheus MCP tools to investigate the alert.
+/// Spawn the Claude Code CLI with MCP tools, wait for output, and parse the result.
 ///
-/// Claude has access to Prometheus via MCP and can autonomously query metrics,
-/// drill into per-peer data, and correlate across hosts to determine root cause.
-pub(crate) async fn call_claude(
+/// Handles process group management (setsid), timeout, and stderr logging.
+pub(super) async fn run_claude(
     state: &AppState,
-    alert: &Alert,
+    ctx: &AlertContext,
     aid: &AlertId,
 ) -> Result<ClaudeOutput> {
-    // Fetch prior annotations, RPC data, and Parca profiles concurrently —
-    // they're independent and can each take up to 30s (Grafana HTTP timeout) /
-    // 10s (RPC deadline) / 10s (Parca deadline).
-    let host = alert
-        .labels
-        .get("host")
-        .map(|s| s.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let alertname = alert
-        .labels
-        .get("alertname")
-        .map(|s| s.as_str())
-        .unwrap_or("")
-        .to_string();
-    let aid_str = aid.to_string();
-
-    let (
-        recent,
-        (rpc_context, rpc_fetched_at),
-        (parca_context, parca_fetched_at),
-        (debug_log_context, debug_log_fetched_at),
-    ) = tokio::join!(
-        fetch_recent_annotations(state, alert),
-        async {
-            match &state.rpc_client {
-                Some(rpc) => rpc.prefetch(&host, &alertname, &aid_str).await,
-                None => (String::new(), None),
-            }
-        },
-        async {
-            match &state.parca_client {
-                Some(parca) => {
-                    parca
-                        .prefetch(&host, &alertname, &aid_str, alert.starts_at)
-                        .await
-                }
-                None => (String::new(), None),
-            }
-        },
-        async {
-            match &state.debug_log_client {
-                Some(client) => {
-                    client
-                        .prefetch(&host, &alertname, &aid_str, alert.starts_at)
-                        .await
-                }
-                None => (String::new(), None),
-            }
-        }
-    );
-    let prior_context = format_prior_context(&recent);
-
-    let prefetch = PreFetchData {
-        prior_context,
-        rpc_context,
-        rpc_fetched_at,
-        parca_context,
-        parca_fetched_at,
-        debug_log_context,
-        debug_log_fetched_at,
-    };
-    let ctx =
-        AlertContext::from_alert(&alert.labels, &alert.annotations, alert.starts_at, prefetch);
-
     info!(alert_id = %aid, "calling claude with MCP prometheus tools");
 
     // SAFETY: setsid() is async-signal-safe per POSIX. It creates a new
@@ -144,7 +77,7 @@ pub(crate) async fn call_claude(
                 "--mcp-config",
                 &state.mcp_config,
                 "-p",
-                &crate::prompt::build_investigation_prompt(&ctx),
+                &crate::prompt::build_investigation_prompt(ctx),
                 "--model",
                 &state.claude_model,
                 "--output-format",

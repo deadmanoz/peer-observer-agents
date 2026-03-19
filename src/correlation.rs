@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use std::fmt;
 
 use crate::annotation::Verdict;
-use crate::prompt::strip_control_chars;
+use crate::sanitization::strip_control_chars;
 use crate::types::Alert;
 
 /// Stable correlation ID for an alert, derived from (alertname, host, threadname, startsAt).
