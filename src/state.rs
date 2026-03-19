@@ -1,4 +1,5 @@
 use crate::cooldown::CooldownMap;
+use crate::parca;
 use crate::profiles::ProfileDb;
 use crate::rpc;
 use std::sync::Arc;
@@ -17,6 +18,9 @@ pub(crate) struct AppState {
     /// Optional Bitcoin Core RPC client for pre-fetching node data.
     /// `None` when `ANNOTATION_AGENT_RPC_HOSTS` is not set (feature disabled).
     pub(crate) rpc_client: Option<rpc::RpcClient>,
+    /// Optional Parca profiling client for pre-fetching CPU profile data.
+    /// `None` when `ANNOTATION_AGENT_PARCA_HOSTS` is not set (feature disabled).
+    pub(crate) parca_client: Option<parca::ParcaClient>,
     /// Limits the number of concurrent Claude investigations to prevent
     /// resource exhaustion when Alertmanager delivers large grouped batches.
     pub(crate) investigation_semaphore: Semaphore,

@@ -239,6 +239,10 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
             format!(
                 r#"1. Query `1 - avg(rate(node_cpu_seconds_total{{mode="idle",host="{pq_host}"}}[5m]))` to confirm CPU usage exceeds 90%. Note: the raw idle metric measures idle time, so a low idle rate (near 0) confirms high CPU usage.
 2. Check per-process CPU usage via process exporter to identify which process is consuming the most CPU.
+2b. If a "Profiling Data" section is present above, examine the top CPU functions.
+    This shows which functions consumed the most CPU during the alert window.
+    Correlate the hot functions with the thread metrics — e.g., if b-scriptch threads are saturated
+    and the top functions are script verification, that confirms block validation load.
 3. Check per-thread CPU saturation: query `sum by(threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname=~"b-msghand|b-net|b-addcon|b-opencon|b-scheduler|b-scriptch.*|bitcoind"}}[5m]))`. The `sum by(threadname)` collapses user+system CPU per thread. A value near 1.0 means that thread is using 100% of one CPU core. Thread roles: b-msghand (message processing — most common bottleneck during mass-broadcast), b-net (network I/O), b-addcon/b-opencon (connection management), b-scheduler (task scheduling), b-scriptch.N (script verification — CPU-intensive during block validation and catchup), bitcoind (main thread).
 4. Check if the node is in IBD — reference the pre-fetched `getblockchaininfo` RPC data (look for `initialblockdownload` field). High CPU during IBD is completely normal and expected.
 5. Check if there's a header-block gap — the node may be catching up on validation.
@@ -257,6 +261,10 @@ evidence items. If the anomaly is still active (level is NOT {condition}), proce
         "PeerObserverThreadSaturation" => {
             format!(
                 r#"1. Confirm saturation with PromQL: query `sum by(host, threadname) (rate(namedprocess_namegroup_thread_cpu_seconds_total{{host="{pq_host}",threadname="{pq_threadname}"}}[5m]))` — the `sum by` collapses user+system CPU. A value near 1.0 confirms 100% of one CPU core.
+1b. If a "Profiling Data" section is present above, check which functions dominate CPU time.
+    Correlate with the saturated thread name — e.g., b-msghand saturation with ProcessMessage()
+    at the top confirms message-handling load, while b-scriptch saturation with VerifyScript()
+    confirms block validation.
 2. Check IBD status via pre-fetched `getblockchaininfo` RPC data (look for the `initialblockdownload` field). Thread saturation during IBD is expected — all threads work harder during initial sync.
 3. Thread role context: b-msghand (message processing — the most common bottleneck; saturates during mass-broadcast events like large inv floods), b-net (network I/O — saturates under high peer count or bandwidth), b-addcon/b-opencon (connection management), b-scheduler (task scheduling), b-scriptch.N (script verification — CPU-intensive during block validation and catchup), bitcoind (main thread — typically low CPU outside startup).
 4. Check for correlated events: query message rates (`peerobserver_p2p_message_count`), block events (`peerobserver_validation_block_connected_latest_height`), and connection changes to identify what triggered the saturation.
@@ -389,7 +397,7 @@ pub(super) fn category_instructions(category: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt::alert_context::AlertContext;
+    use crate::prompt::alert_context::{AlertContext, PreFetchData};
     use crate::prompt::build_investigation_prompt;
     use crate::prompt::fast_path::fast_path_spec;
     use chrono::{TimeZone, Utc};
@@ -412,6 +420,8 @@ mod tests {
             prior_context: String::new(),
             rpc_context: String::new(),
             rpc_fetched_at: None,
+            parca_context: String::new(),
+            parca_fetched_at: None,
         }
     }
 
@@ -557,14 +567,7 @@ mod tests {
         labels.insert("alertname".into(), "PeerObserverThreadSaturation".into());
         labels.insert("host".into(), "bitcoin-03".into());
         labels.insert("threadname".into(), "\n\t".into());
-        let ctx = AlertContext::from_alert(
-            &labels,
-            &None,
-            test_time(),
-            String::new(),
-            String::new(),
-            None,
-        );
+        let ctx = AlertContext::from_alert(&labels, &None, test_time(), PreFetchData::default());
         // from_alert strips control chars → threadname becomes empty
         assert!(ctx.threadname.is_empty());
         let prompt = build_investigation_prompt(&ctx);
@@ -844,6 +847,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Profiling data references in instructions ──────────────────
+
+    #[test]
+    fn high_cpu_instructions_reference_profiling_data() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverHighCPU".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Profiling Data"));
+    }
+
+    #[test]
+    fn thread_saturation_instructions_reference_profiling_data() {
+        let prompt = build_investigation_prompt(&AlertContext {
+            alertname: "PeerObserverThreadSaturation".into(),
+            threadname: "b-msghand".into(),
+            ..default_ctx()
+        });
+        assert!(prompt.contains("Profiling Data"));
     }
 
     #[test]

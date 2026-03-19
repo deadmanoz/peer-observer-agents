@@ -3,6 +3,7 @@ mod cooldown;
 mod correlation;
 mod grafana;
 mod investigation;
+mod parca;
 mod profiles;
 mod prompt;
 mod rpc;
@@ -115,6 +116,31 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Parca profiling client: enabled when ANNOTATION_AGENT_PARCA_HOSTS is set.
+    // Each node runs its own Parca server; PARCA_HOSTS maps alert host names to
+    // per-node Parca base URLs.
+    let parca_client = match env::var("ANNOTATION_AGENT_PARCA_HOSTS") {
+        Ok(hosts_json) => {
+            let profile_type = env::var("ANNOTATION_AGENT_PARCA_PROFILE_TYPE")
+                .context("ANNOTATION_AGENT_PARCA_PROFILE_TYPE required when PARCA_HOSTS is set")?;
+            let process_filter = env::var("ANNOTATION_AGENT_PARCA_PROCESS_FILTER").context(
+                "ANNOTATION_AGENT_PARCA_PROCESS_FILTER required when PARCA_HOSTS is set \
+                 (e.g., comm=\"bitcoind\")",
+            )?;
+            let top_n: usize = match env::var("ANNOTATION_AGENT_PARCA_TOP_N") {
+                Ok(v) => v
+                    .parse()
+                    .context("ANNOTATION_AGENT_PARCA_TOP_N must be a positive integer")?,
+                Err(_) => 15,
+            };
+            let client = parca::ParcaClient::new(&hosts_json, profile_type, process_filter, top_n)
+                .context("invalid Parca configuration")?;
+            info!("Parca profiling prefetch enabled");
+            Some(client)
+        }
+        Err(_) => None,
+    };
+
     // Peer profiles configuration
     let profiles_poll_interval_secs: u64 = env::var("ANNOTATION_AGENT_PROFILES_POLL_INTERVAL_SECS")
         .ok()
@@ -180,6 +206,7 @@ async fn main() -> Result<()> {
             .build()
             .context("failed to build HTTP client")?,
         rpc_client,
+        parca_client,
         investigation_semaphore: Semaphore::new(max_concurrent),
         cooldown: Duration::from_secs(cooldown_secs),
         cooldown_map: std::sync::Mutex::new(HashMap::new()),
@@ -498,6 +525,7 @@ mod tests {
             claude_timeout: Duration::from_secs(DEFAULT_CLAUDE_TIMEOUT_SECS),
             http: reqwest::Client::new(),
             rpc_client: None,
+            parca_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
@@ -596,6 +624,7 @@ mod tests {
             claude_timeout: Duration::from_secs(DEFAULT_CLAUDE_TIMEOUT_SECS),
             http: reqwest::Client::new(),
             rpc_client: None,
+            parca_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::from_secs(1800),
             cooldown_map: std::sync::Mutex::new(map),
@@ -707,6 +736,7 @@ mod tests {
             claude_timeout: Duration::from_secs(DEFAULT_CLAUDE_TIMEOUT_SECS),
             http: reqwest::Client::new(),
             rpc_client: None,
+            parca_client: None,
             investigation_semaphore: Semaphore::new(DEFAULT_MAX_CONCURRENT),
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),

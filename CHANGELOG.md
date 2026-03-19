@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add Parca CPU profiling pre-fetch for performance-related alerts (`PeerObserverHighCPU`, `PeerObserverThreadSaturation`). Queries Parca's REST API for top CPU functions during the alert window and injects a formatted `<profiling-data>` section into the investigation prompt. Runs concurrently with existing RPC and Grafana pre-fetches. Configurable via `ANNOTATION_AGENT_PARCA_*` env vars (disabled when `PARCA_HOSTS` is unset).
+
 ## [0.6.1] - 2026-03-18
 
 ### Added
