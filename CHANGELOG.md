@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-03-19
+
 ### Changed
 
 - Introduce typed alert catalog (`src/alerts/`): `define_alerts!` macro generates `KnownAlert` enum with `parse()`, `as_str()`, `kind()`, and `ALL`. Each variant has a compiler-enforced `spec()` returning `AlertSpec` with nested `RpcSpec`, `DebugLogSpec`, `ProfilingSpec`, and `FastPathSpec`. Adding a new alert requires one catalog entry and one instruction dispatcher arm — both enforced at compile time.
