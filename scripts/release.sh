@@ -74,8 +74,9 @@ if $DRY_RUN; then
   echo "[dry-run] Would update Cargo.toml: version = \"$OLD_VERSION\" → \"$NEW_VERSION\""
   echo "[dry-run] Would update flake.nix:  version = \"$OLD_VERSION\" → \"$NEW_VERSION\""
   echo "[dry-run] Would regenerate Cargo.lock"
+  echo "[dry-run] Would move CHANGELOG.md [Unreleased] entries to [${NEW_VERSION}] - $(date +%Y-%m-%d)"
   echo "[dry-run] Would run: just check && just test"
-  echo "[dry-run] Would commit: chore: release v${NEW_VERSION} (includes CHANGELOG.md if modified)"
+  echo "[dry-run] Would commit: chore: release v${NEW_VERSION}"
   echo "[dry-run] Would tag: v${NEW_VERSION}"
   echo ""
   echo "No changes made."
@@ -90,6 +91,29 @@ sed "s/version = \"$OLD_VERSION\"/version = \"$NEW_VERSION\"/" flake.nix > flake
 
 # Update Cargo.lock
 cargo generate-lockfile --quiet 2>/dev/null || cargo check --quiet 2>/dev/null || true
+
+# Move [Unreleased] entries to a versioned section in CHANGELOG.md.
+# Inserts "## [X.Y.Z] - YYYY-MM-DD" after the "## [Unreleased]" header,
+# preserving any content already under [Unreleased].
+if [ -f CHANGELOG.md ]; then
+  RELEASE_DATE=$(date +%Y-%m-%d)
+  if grep -q '## \[Unreleased\]' CHANGELOG.md; then
+    # Check if entries exist under [Unreleased] (non-empty lines before the next ## heading)
+    HAS_ENTRIES=$(awk '/^## \[Unreleased\]/{found=1; next} found && /^## \[/{exit} found && /^[^[:space:]]/{print; exit}' CHANGELOG.md)
+    if [ -n "$HAS_ENTRIES" ]; then
+      # Insert versioned header after [Unreleased], with a blank line between.
+      # Uses awk for portable newline insertion (BSD sed does not support \n in replacements).
+      awk -v ver="$NEW_VERSION" -v date="$RELEASE_DATE" \
+        '/^## \[Unreleased\]$/{print; print ""; print "## [" ver "] - " date; next} {print}' \
+        CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+      echo "CHANGELOG.md: moved [Unreleased] entries to [${NEW_VERSION}] - ${RELEASE_DATE}"
+    else
+      echo "CHANGELOG.md: no entries under [Unreleased], skipping"
+    fi
+  else
+    echo "CHANGELOG.md: no [Unreleased] section found, skipping"
+  fi
+fi
 
 # --- 2. Quality gates ---
 echo ""
