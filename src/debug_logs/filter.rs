@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use tracing::debug;
 
-use crate::prompt::sanitize;
+use crate::sanitization::sanitize;
 
 /// Specifies which debug.log categories to include for an alert type.
 pub(crate) struct LogFilter {
@@ -18,64 +18,15 @@ pub(crate) struct LogFilter {
 /// Uses full `PeerObserver*` alert names, matching the pattern in
 /// `src/rpc/mod.rs` and `src/parca/mod.rs`.
 pub(crate) fn log_filter_for_alert(alertname: &str) -> LogFilter {
-    match alertname {
-        // Connection/P2P alerts — net category
-        "PeerObserverAddressMessageSpike"
-        | "PeerObserverMisbehaviorSpike"
-        | "PeerObserverInboundConnectionDrop"
-        | "PeerObserverOutboundConnectionDrop"
-        | "PeerObserverTotalPeersDrop"
-        | "PeerObserverNetworkInactive"
-        | "PeerObserverINVQueueDepthAnomaly"
-        | "PeerObserverINVQueueDepthExtreme" => LogFilter {
-            categories: vec!["net"],
-            include_uncategorized: false,
-        },
-
-        // Chain health — validation, bench, compact blocks
-        "PeerObserverBlockStale"
-        | "PeerObserverBlockStaleCritical"
-        | "PeerObserverHeaderBlockGap" => LogFilter {
-            categories: vec!["validation", "bench", "cmpctblock"],
-            include_uncategorized: false,
-        },
-
-        // IBD — validation and bench
-        "PeerObserverNodeInIBD" => LogFilter {
-            categories: vec!["validation", "bench"],
-            include_uncategorized: false,
-        },
-
-        // Restart — net, validation, plus uncategorized startup messages
-        "PeerObserverBitcoinCoreRestart" => LogFilter {
-            categories: vec!["net", "validation"],
-            include_uncategorized: true,
-        },
-
-        // Mempool alerts
-        "PeerObserverMempoolFull" | "PeerObserverMempoolEmpty" => LogFilter {
-            categories: vec!["mempool", "mempoolrej"],
-            include_uncategorized: false,
-        },
-
-        // CPU/thread performance
-        "PeerObserverHighCPU" | "PeerObserverThreadSaturation" => LogFilter {
-            categories: vec!["validation", "bench", "net"],
-            include_uncategorized: false,
-        },
-
-        // Infrastructure/meta alerts — no debug log fetch
-        "PeerObserverServiceFailed"
-        | "PeerObserverMetricsToolDown"
-        | "PeerObserverDiskSpaceLow"
-        | "PeerObserverHighMemory"
-        | "PeerObserverAnomalyDetectionDown" => LogFilter {
-            categories: vec![],
-            include_uncategorized: false,
-        },
-
-        // Unknown alerts — no fetch
-        _ => LogFilter {
+    match crate::alerts::KnownAlert::parse(alertname) {
+        Some(alert) => {
+            let spec = alert.spec();
+            LogFilter {
+                categories: spec.debug_logs.categories.to_vec(),
+                include_uncategorized: spec.debug_logs.include_uncategorized,
+            }
+        }
+        None => LogFilter {
             categories: vec![],
             include_uncategorized: false,
         },
@@ -522,35 +473,22 @@ mod tests {
     // ── log_filter_for_alert ──────────────────────────────────────────
 
     #[test]
-    fn connection_alerts_get_net_category() {
-        for alert in &[
-            "PeerObserverAddressMessageSpike",
-            "PeerObserverMisbehaviorSpike",
-            "PeerObserverInboundConnectionDrop",
-            "PeerObserverOutboundConnectionDrop",
-            "PeerObserverTotalPeersDrop",
-            "PeerObserverNetworkInactive",
-            "PeerObserverINVQueueDepthAnomaly",
-            "PeerObserverINVQueueDepthExtreme",
-        ] {
-            let filter = log_filter_for_alert(alert);
-            assert_eq!(filter.categories, vec!["net"], "for {alert}");
-            assert!(!filter.include_uncategorized, "for {alert}");
-        }
-    }
+    fn every_known_alert_has_consistent_log_filter() {
+        use crate::alerts::KnownAlert;
 
-    #[test]
-    fn chain_health_alerts_get_validation_bench_cmpctblock() {
-        for alert in &[
-            "PeerObserverBlockStale",
-            "PeerObserverBlockStaleCritical",
-            "PeerObserverHeaderBlockGap",
-        ] {
-            let filter = log_filter_for_alert(alert);
+        for alert in KnownAlert::ALL {
+            let spec = alert.spec();
+            let filter = log_filter_for_alert(alert.as_str());
             assert_eq!(
                 filter.categories,
-                vec!["validation", "bench", "cmpctblock"],
-                "for {alert}"
+                spec.debug_logs.categories.to_vec(),
+                "categories mismatch for {:?}",
+                alert
+            );
+            assert_eq!(
+                filter.include_uncategorized, spec.debug_logs.include_uncategorized,
+                "include_uncategorized mismatch for {:?}",
+                alert
             );
         }
     }
@@ -566,45 +504,6 @@ mod tests {
         let filter = log_filter_for_alert("PeerObserverBitcoinCoreRestart");
         assert_eq!(filter.categories, vec!["net", "validation"]);
         assert!(filter.include_uncategorized);
-    }
-
-    #[test]
-    fn mempool_alerts_get_mempool_mempoolrej() {
-        for alert in &["PeerObserverMempoolFull", "PeerObserverMempoolEmpty"] {
-            let filter = log_filter_for_alert(alert);
-            assert_eq!(
-                filter.categories,
-                vec!["mempool", "mempoolrej"],
-                "for {alert}"
-            );
-        }
-    }
-
-    #[test]
-    fn cpu_thread_alerts_get_validation_bench_net() {
-        for alert in &["PeerObserverHighCPU", "PeerObserverThreadSaturation"] {
-            let filter = log_filter_for_alert(alert);
-            assert_eq!(
-                filter.categories,
-                vec!["validation", "bench", "net"],
-                "for {alert}"
-            );
-        }
-    }
-
-    #[test]
-    fn infrastructure_alerts_get_empty() {
-        for alert in &[
-            "PeerObserverServiceFailed",
-            "PeerObserverMetricsToolDown",
-            "PeerObserverDiskSpaceLow",
-            "PeerObserverHighMemory",
-            "PeerObserverAnomalyDetectionDown",
-        ] {
-            let filter = log_filter_for_alert(alert);
-            assert!(filter.categories.is_empty(), "for {alert}");
-            assert!(!filter.include_uncategorized, "for {alert}");
-        }
     }
 
     #[test]

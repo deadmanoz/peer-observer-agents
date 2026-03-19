@@ -33,8 +33,16 @@ nix build                      # Build via flake (Linux/CI)
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/main.rs` | HTTP server, webhook handler, `process_alert` orchestrator |
-| `src/prompt/` | Investigation prompt generation, sanitization, fast-path |
+| `src/main.rs` | Bootstrap only: tracing init → config load → server run |
+| `src/config.rs` | Env var parsing (`ANNOTATION_AGENT_*`), `RuntimeConfig` + `AppState` construction |
+| `src/server.rs` | HTTP router assembly, webhook/healthz/version handlers, `axum::serve` |
+| `src/processor.rs` | `process_alert` orchestrator, annotation result handling, log appending |
+| `src/alerts/` | Typed alert catalog (`KnownAlert` enum), `AlertSpec` with nested per-source specs |
+| `src/context.rs` | Neutral `ContextSection` transport — extractors produce, prompt renders |
+| `src/sanitization.rs` | Shared sanitization helpers (XML escaping, host/control-char stripping) |
+| `src/prompt/` | Investigation prompt generation, PromQL sanitization, fast-path |
+| `src/prompt/instructions/` | Per-family investigation steps (connections, performance, chain, etc.) |
+| `src/investigation/` | `collector.rs` (context fetching) + `runner.rs` (Claude CLI subprocess) |
 | `src/viewer/` | `/logs` and `/api/logs` — annotation log viewer |
 | `src/rpc/` | Bitcoin Core RPC client and response filtering |
 | `src/parca/` | Parca profiling API client, CPU profile pre-fetch for performance alerts |
@@ -42,7 +50,6 @@ nix build                      # Build via flake (Linux/CI)
 | `src/profiles/` | Peer profiles: SQLite DB, poller, `/peers` API and viewer |
 | `src/annotation.rs` | Structured annotation types, HTML rendering, peer-intervention policy guard |
 | `src/grafana.rs` | Grafana annotation API |
-| `src/investigation.rs` | Claude CLI subprocess management |
 | `src/cooldown.rs` | Cooldown suppression |
 | `src/correlation.rs` | Alert ID generation, idempotency tags |
 

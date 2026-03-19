@@ -3,6 +3,7 @@
 use axum::{extract::State, http::StatusCode, response::Html};
 use std::sync::Arc;
 
+use super::VIEWER_CSP;
 use crate::state::AppState;
 
 /// `GET /logs` — serves the self-contained HTML log viewer.
@@ -24,10 +25,7 @@ pub(crate) async fn logs_page(
         [
             ("x-frame-options", "DENY"),
             ("x-content-type-options", "nosniff"),
-            (
-                "content-security-policy",
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
-            ),
+            ("content-security-policy", VIEWER_CSP),
         ],
         Html(include_str!("../viewer.html")),
     ))

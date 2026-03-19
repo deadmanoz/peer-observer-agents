@@ -14,3 +14,7 @@ pub(crate) use api::check_auth;
 pub(crate) use html::logs_page;
 pub(crate) use log_file::append_jsonl_log;
 pub(crate) use log_schema::{LogEntry, Telemetry};
+
+/// Content-Security-Policy header for viewer HTML pages.
+pub(crate) const VIEWER_CSP: &str =
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'";

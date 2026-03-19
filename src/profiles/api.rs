@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::db::ProfileDb;
 use crate::state::AppState;
-use crate::viewer::check_auth;
+use crate::viewer::{check_auth, VIEWER_CSP};
 
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 500;
@@ -135,10 +135,7 @@ pub(crate) async fn peers_page(
         [
             ("x-frame-options", "DENY"),
             ("x-content-type-options", "nosniff"),
-            (
-                "content-security-policy",
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
-            ),
+            ("content-security-policy", VIEWER_CSP),
         ],
         axum::response::Html(include_str!("viewer.html")),
     ))

@@ -8,6 +8,22 @@ use crate::correlation::{build_annotation_tags, build_idempotency_tags, AlertId}
 use crate::state::AppState;
 use crate::types::Alert;
 
+/// Build a Grafana GET request with the Authorization header pre-filled.
+fn grafana_get(state: &AppState, path: &str) -> reqwest::RequestBuilder {
+    state
+        .http
+        .get(format!("{}{path}", state.grafana_url))
+        .header("Authorization", format!("Bearer {}", state.grafana_api_key))
+}
+
+/// Build a Grafana POST request with the Authorization header pre-filled.
+fn grafana_post(state: &AppState, path: &str) -> reqwest::RequestBuilder {
+    state
+        .http
+        .post(format!("{}{path}", state.grafana_url))
+        .header("Authorization", format!("Bearer {}", state.grafana_api_key))
+}
+
 // Grafana annotation payload.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,10 +88,7 @@ pub(crate) async fn post_grafana_annotation(
         text: text.to_string(),
     };
 
-    let resp = state
-        .http
-        .post(format!("{}/api/annotations", state.grafana_url))
-        .header("Authorization", format!("Bearer {}", state.grafana_api_key))
+    let resp = grafana_post(state, "/api/annotations")
         .header("Content-Type", "application/json")
         .json(&annotation)
         .send()
@@ -98,7 +111,6 @@ pub(crate) async fn post_grafana_annotation(
 /// both pass the check before either posts. That's acceptable — the worst case is a
 /// duplicate annotation, not data loss.
 async fn annotation_exists(state: &AppState, tags: &[String], time_ms: i64) -> bool {
-    let url = format!("{}/api/annotations", state.grafana_url);
     let from = (time_ms - 1000).to_string();
     let to = (time_ms + 1000).to_string();
 
@@ -107,10 +119,7 @@ async fn annotation_exists(state: &AppState, tags: &[String], time_ms: i64) -> b
         params.push(("tags", tag));
     }
 
-    let result = state
-        .http
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", state.grafana_api_key))
+    let result = grafana_get(state, "/api/annotations")
         .query(&params)
         .send()
         .await;
@@ -139,12 +148,7 @@ pub(crate) async fn fetch_recent_annotations(
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
 
-    let url = format!("{}/api/annotations", state.grafana_url);
-
-    let result = state
-        .http
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", state.grafana_api_key))
+    let result = grafana_get(state, "/api/annotations")
         .query(&[
             ("tags", "ai-annotation"),
             ("tags", &host),

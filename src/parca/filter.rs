@@ -1,4 +1,4 @@
-use crate::prompt::sanitize;
+use crate::sanitization::sanitize;
 
 /// Resolve a human-readable function label from Parca metadata.
 ///

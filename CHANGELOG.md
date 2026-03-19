@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- Add Parca CPU profiling pre-fetch for performance-related alerts (`PeerObserverHighCPU`, `PeerObserverThreadSaturation`). Queries Parca's REST API for top CPU functions during the alert window and injects a formatted `<profiling-data>` section into the investigation prompt. Runs concurrently with existing RPC and Grafana pre-fetches. Configurable via `ANNOTATION_AGENT_PARCA_*` env vars (disabled when `PARCA_HOSTS` is unset).
+- Introduce typed alert catalog (`src/alerts/`): `define_alerts!` macro generates `KnownAlert` enum with `parse()`, `as_str()`, `kind()`, and `ALL`. Each variant has a compiler-enforced `spec()` returning `AlertSpec` with nested `RpcSpec`, `DebugLogSpec`, `ProfilingSpec`, and `FastPathSpec`. Adding a new alert requires one catalog entry and one instruction dispatcher arm — both enforced at compile time.
+- Split investigation instructions into per-family modules (`src/prompt/instructions/{connections,p2p_messages,security,performance,chain,mempool,infra,meta}.rs`) dispatched via exhaustive match on `KnownAlert`.
+- Migrate all per-alert routing functions (`rpc_methods_for_alert`, `peer_info_fields_for_alert`, `per_msg_keys_for_alert`, `should_fetch_profile`, `log_filter_for_alert`, `fast_path_spec`) to delegate to `KnownAlert::spec()`. Match-on-string routing eliminated.
+- Rewrite grouped alert-subset tests to derive from `KnownAlert::ALL` with relational invariants instead of hand-maintained alert lists.
+- Extract `src/config.rs` (env var parsing, `RuntimeConfig`), `src/server.rs` (router, handlers, serve), and `src/processor.rs` (`process_alert`, annotation result handling) from `main.rs`. Main becomes ~30 lines of bootstrap: tracing init → config load → server run.
+- Introduce neutral `ContextSection` transport (`src/context.rs`): extractors (RPC, Parca, debug log) return `Option<ContextSection>` instead of `(String, Option<DateTime>)`. Prompt builder renders sections via a generic loop instead of three hardcoded blocks. Move shared sanitization helpers (`sanitize`, `strip_control_chars`, `sanitize_host_for_prompt`) to `src/sanitization.rs` so the context module has no dependency on the prompt layer.
+- Split `investigation.rs` into `investigation/{mod,collector,runner}.rs`: context collection separated from Claude CLI subprocess management.
+- Extract `VIEWER_CSP` constant from duplicated inline strings in viewer and profiles HTML handlers.
+- Consolidate Grafana API request helpers (`grafana_get`/`grafana_post`) and shared prompt test fixtures (`AlertContext::test_default`).
 
 ## [0.6.1] - 2026-03-18
 
