@@ -28,6 +28,8 @@ pub(crate) struct AppState {
     /// Limits the number of concurrent Claude investigations to prevent
     /// resource exhaustion when Alertmanager delivers large grouped batches.
     pub(crate) investigation_semaphore: Semaphore,
+    /// Configured maximum concurrent investigations (for status reporting).
+    pub(crate) max_concurrent: usize,
     /// Cooldown window for suppressing retriggers of the same `(alertname, host, threadname)`.
     /// `Duration::ZERO` disables suppression.
     pub(crate) cooldown: Duration,

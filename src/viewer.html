@@ -167,7 +167,7 @@
     if (versionLoaded) return;
     versionLoaded = true;
     try {
-      const resp = await fetch('/api/version', fetchOpts());
+      const resp = await fetch('api/version', fetchOpts());
       if (!resp.ok) { versionLoaded = false; return; }
       const data = await resp.json();
       const badge = document.getElementById('version-badge');
@@ -200,7 +200,7 @@
   // proxy injects the Authorization header, we get 200 and skip the login.
   (async function detectProxyAuth() {
     try {
-      const resp = await fetch('/api/logs?limit=1');
+      const resp = await fetch('api/logs?limit=1');
       if (resp.ok) {
         PROXY_AUTH = true;
         document.getElementById('auth-bar').classList.add('hidden');
@@ -255,7 +255,7 @@
         params.set('logged_before', d.toISOString());
       }
 
-      const resp = await fetch('/api/logs?' + params.toString(), fetchOpts());
+      const resp = await fetch('api/logs?' + params.toString(), fetchOpts());
 
       // Stale response — a newer loadLogs() call was made while this
       // one was in flight.  Discard silently.

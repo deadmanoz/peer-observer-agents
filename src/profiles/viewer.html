@@ -179,7 +179,7 @@
     if (versionLoaded) return;
     versionLoaded = true;
     try {
-      var resp = await fetch('/api/version', fetchOpts());
+      var resp = await fetch('api/version', fetchOpts());
       if (!resp.ok) { versionLoaded = false; return; }
       var data = await resp.json();
       var badge = document.getElementById('version-badge');
@@ -221,7 +221,7 @@
   (async function detectProxyAuth() {
     if (TOKEN) return;
     try {
-      var resp = await fetch('/api/peers/stats');
+      var resp = await fetch('api/peers/stats');
       // Re-check after await — user may have authenticated manually while fetch was in-flight
       if (resp.ok && !TOKEN && !PROXY_AUTH) {
         PROXY_AUTH = true;
@@ -236,7 +236,7 @@
 
   async function loadStats() {
     try {
-      var resp = await fetch('/api/peers/stats', fetchOpts());
+      var resp = await fetch('api/peers/stats', fetchOpts());
       if (!resp.ok) return;
       loadVersionBadge();
       STATS_DATA = await resp.json();
@@ -337,7 +337,7 @@
     params.set('offset', String(offset || 0));
 
     try {
-      var resp = await fetch('/api/peers?' + params.toString(), fetchOpts());
+      var resp = await fetch('api/peers?' + params.toString(), fetchOpts());
 
       if (myRequestId !== REQUEST_ID) return;
 
@@ -463,7 +463,7 @@
     showStatus(content, 'Loading peer details...');
 
     try {
-      var resp = await fetch('/api/peers/' + encodeURIComponent(peerId), fetchOpts());
+      var resp = await fetch('api/peers/' + encodeURIComponent(peerId), fetchOpts());
 
       if (resp.status === 401) {
         sessionStorage.removeItem('peer-profiles-token');

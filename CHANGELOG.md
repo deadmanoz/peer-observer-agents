@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add home dashboard at `/` with feature status display showing which data sources (RPC, Parca, debug logs, peer profiles, log viewer) are enabled, per-node capability badges, and runtime configuration. Designed to be mounted at `/agent/` via nginx reverse proxy.
+- Add `/api/status` JSON endpoint returning feature enablement flags, monitored host details with per-host capability indicators, and runtime parameters.
+- Switch all viewer page API calls from absolute (`/api/...`) to relative (`api/...`) URLs so the agent can be mounted at any nginx prefix path (e.g., `/agent/`).
+
 ## [0.7.0] - 2026-03-19
 
 ### Changed
