@@ -59,10 +59,16 @@ All config via `ANNOTATION_AGENT_*` env vars. See [docs/deployment.md](docs/depl
 
 ## Endpoints
 
+Internal routes (mounted at `/agent/` via nginx reverse proxy in production):
+
+- `GET /` — Home dashboard with feature status (requires `VIEWER_AUTH_TOKEN`)
 - `POST /webhook` — Alertmanager webhook receiver
 - `GET /healthz` — Health check
+- `GET /api/status` — Feature enablement, host details, runtime config (requires `VIEWER_AUTH_TOKEN`)
 - `GET /logs`, `GET /api/logs` — Annotation log viewer (requires `LOG_FILE` + `VIEWER_AUTH_TOKEN`)
 - `GET /peers`, `GET /api/peers`, `GET /api/peers/{id}`, `GET /api/peers/stats` — Peer profiles (requires `PROFILES_DB` + `VIEWER_AUTH_TOKEN`)
+
+In production: `/agent/` → `/`, `/agent/logs` → `/logs`, `/agent/api/status` → `/api/status`, etc.
 
 ## Log Correlation
 

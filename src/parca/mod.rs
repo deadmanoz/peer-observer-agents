@@ -215,6 +215,11 @@ impl ParcaClient {
         crate::alerts::KnownAlert::parse(alertname).is_some_and(|a| a.spec().profiling.is_some())
     }
 
+    /// Returns all configured host names.
+    pub fn host_names(&self) -> Vec<String> {
+        self.hosts.keys().cloned().collect()
+    }
+
     /// Pre-fetch CPU profiling data for an alert, returning a context section.
     ///
     /// On any failure (host not mapped, API unreachable, timeout), logs a warning

@@ -6,6 +6,7 @@ use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
+    response::Html,
     routing::{get, post},
     Json, Router,
 };
@@ -57,7 +58,10 @@ pub(crate) async fn run(config: RuntimeConfig) -> Result<()> {
     }
 
     if viewer_enabled || profiles_viewer_enabled {
-        app = app.route("/api/version", get(api_version));
+        app = app
+            .route("/", get(home_page))
+            .route("/api/version", get(api_version))
+            .route("/api/status", get(api_status));
     }
 
     if profiles_viewer_enabled {
@@ -99,6 +103,88 @@ async fn api_version(
     Ok((
         [("cache-control", "no-store")],
         Json(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
+    ))
+}
+
+async fn home_page() -> impl axum::response::IntoResponse {
+    (
+        [
+            ("x-frame-options", "DENY"),
+            ("x-content-type-options", "nosniff"),
+            ("content-security-policy", crate::viewer::VIEWER_CSP),
+        ],
+        Html(include_str!("home.html")),
+    )
+}
+
+async fn api_status(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    let token = state
+        .viewer_auth_token
+        .as_deref()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    crate::viewer::check_auth(&headers, token)?;
+
+    // Build hosts from the union of all configured sources so Parca-only
+    // or RPC-only deployments still surface per-node visibility.
+    let mut host_map: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+
+    let debug_log_enabled = state.debug_log_client.is_some();
+
+    if let Some(ref rpc) = state.rpc_client {
+        for (name, ip) in rpc.hosts() {
+            host_map.insert(
+                name.clone(),
+                serde_json::json!({
+                    "name": name,
+                    "ip": ip.to_string(),
+                    "rpc": true,
+                    "parca": false,
+                    "debug_log": debug_log_enabled,
+                }),
+            );
+        }
+    }
+
+    if let Some(ref parca) = state.parca_client {
+        for name in parca.host_names() {
+            host_map
+                .entry(name.clone())
+                .and_modify(|h| h["parca"] = serde_json::json!(true))
+                .or_insert_with(|| {
+                    serde_json::json!({
+                        "name": name,
+                        "ip": "",
+                        "rpc": false,
+                        "parca": true,
+                        "debug_log": false,
+                    })
+                });
+        }
+    }
+
+    let hosts: Vec<_> = host_map.into_values().collect();
+
+    Ok((
+        [("cache-control", "no-store")],
+        Json(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "features": {
+                "rpc": state.rpc_client.is_some(),
+                "parca": state.parca_client.is_some(),
+                "debug_logs": state.debug_log_client.is_some(),
+                "profiles": state.profile_db.is_some(),
+                "viewer": state.log_file.is_some(),
+            },
+            "hosts": hosts,
+            "cooldown_secs": state.cooldown.as_secs(),
+            "max_concurrent": state.max_concurrent,
+            "claude_timeout_secs": state.claude_timeout.as_secs(),
+            "claude_model": state.claude_model,
+        })),
     ))
 }
 
@@ -166,6 +252,7 @@ mod tests {
             parca_client: None,
             debug_log_client: None,
             investigation_semaphore: Semaphore::new(crate::config::DEFAULT_MAX_CONCURRENT),
+            max_concurrent: crate::config::DEFAULT_MAX_CONCURRENT,
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
             viewer_auth_token: None,
@@ -264,6 +351,7 @@ mod tests {
             parca_client: None,
             debug_log_client: None,
             investigation_semaphore: Semaphore::new(crate::config::DEFAULT_MAX_CONCURRENT),
+            max_concurrent: crate::config::DEFAULT_MAX_CONCURRENT,
             cooldown: Duration::from_secs(1800),
             cooldown_map: std::sync::Mutex::new(map),
             viewer_auth_token: None,
@@ -373,6 +461,7 @@ mod tests {
             parca_client: None,
             debug_log_client: None,
             investigation_semaphore: Semaphore::new(crate::config::DEFAULT_MAX_CONCURRENT),
+            max_concurrent: crate::config::DEFAULT_MAX_CONCURRENT,
             cooldown: Duration::ZERO,
             cooldown_map: std::sync::Mutex::new(HashMap::new()),
             viewer_auth_token: Some("test-token".into()),

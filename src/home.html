@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>peer-observer agent</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg-card: #161b22; --bg-hover: #1c2128;
+    --border: #30363d; --text: #c9d1d9; --text-muted: #8b949e;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --blue: #58a6ff; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+  .container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  .version { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: rgba(88,166,255,0.15); color: var(--blue); font-weight: 600; }
+
+  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+
+  .feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .feature { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); }
+  .feature .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .feature .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .feature .dot.off { background: var(--text-muted); opacity: 0.4; }
+  .feature .name { font-size: 13px; font-weight: 500; }
+  .feature .detail { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+
+  .host-list { display: flex; flex-direction: column; gap: 6px; }
+  .host-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); font-size: 13px; }
+  .host-row .host-name { font-weight: 600; min-width: 100px; }
+  .host-row .host-ip { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: var(--text-muted); }
+  .host-row .host-badges { margin-left: auto; display: flex; gap: 6px; }
+  .host-badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; font-weight: 600; text-transform: uppercase; }
+  .host-badge.rpc { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .host-badge.parca { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .host-badge.debug-log { background: rgba(63,185,80,0.15); color: var(--green); }
+
+  nav { display: flex; gap: 8px; margin-bottom: 20px; }
+  nav a { padding: 6px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--blue); text-decoration: none; font-size: 13px; font-weight: 500; }
+  nav a:hover { background: var(--bg-hover); }
+
+  .meta { font-size: 12px; color: var(--text-muted); }
+  .meta span { margin-right: 16px; }
+  .mono { font-family: 'SF Mono', Consolas, monospace; }
+
+  .loading { color: var(--text-muted); font-size: 13px; }
+  .error { color: var(--red); font-size: 13px; }
+
+  /* Auth bar */
+  .auth-bar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
+  .auth-bar input { flex: 1; max-width: 400px; padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+  .auth-bar button { padding: 6px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 13px; }
+  .auth-bar button:hover { background: var(--bg-hover); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>peer-observer agent</h1>
+    <span id="version" class="version">...</span>
+  </header>
+
+  <div class="auth-bar" id="auth-bar">
+    <input type="password" id="token" placeholder="Viewer token" autocomplete="off">
+    <button onclick="authenticate()">Connect</button>
+  </div>
+
+  <div id="content" style="display:none">
+    <nav id="nav"></nav>
+
+    <div class="card">
+      <h2>Data Sources</h2>
+      <div class="feature-grid" id="features">
+        <div class="loading">Loading...</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Monitored Nodes</h2>
+      <div class="host-list" id="hosts">
+        <div class="loading">Loading...</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Runtime</h2>
+      <div class="meta" id="runtime">
+        <div class="loading">Loading...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let TOKEN = '';
+let PROXY_AUTH = false;
+
+function authenticate() {
+  TOKEN = document.getElementById('token').value.trim();
+  if (!TOKEN) return;
+  document.getElementById('auth-bar').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+  fetchStatus();
+}
+
+document.getElementById('token').addEventListener('keydown', e => {
+  if (e.key === 'Enter') authenticate();
+});
+
+// Auto-detect proxy auth: try a lightweight API call without a token.
+// If the reverse proxy injects the Authorization header, we get 200
+// and skip the manual login — same pattern as viewer.html and profiles.
+(async function detectProxyAuth() {
+  try {
+    const resp = await fetch('api/status');
+    if (resp.ok) {
+      PROXY_AUTH = true;
+      document.getElementById('auth-bar').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+      const data = await resp.json();
+      render(data);
+      return;
+    }
+  } catch(e) { /* network error — fall through to manual auth */ }
+})();
+
+function fetchOpts() {
+  if (PROXY_AUTH) return {};
+  return { headers: { 'Authorization': `Bearer ${TOKEN}` } };
+}
+
+async function fetchStatus() {
+  try {
+    const resp = await fetch('api/status', fetchOpts());
+    if (resp.status === 401) {
+      document.getElementById('auth-bar').style.display = 'flex';
+      document.getElementById('content').style.display = 'none';
+      document.getElementById('token').value = '';
+      document.getElementById('token').placeholder = 'Invalid token — try again';
+      return;
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    render(data);
+  } catch (e) {
+    document.getElementById('features').innerHTML = `<div class="error">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function render(data) {
+  document.getElementById('version').textContent = `v${data.version}`;
+
+  // Nav links — only show pages that are actually available
+  const navLinks = [];
+  if (data.features.viewer) navLinks.push('<a href="logs">Annotation Logs</a>');
+  if (data.features.profiles) navLinks.push('<a href="peers">Peer Profiles</a>');
+  document.getElementById('nav').innerHTML = navLinks.join('');
+
+  // Features
+  const features = [
+    { key: 'rpc', name: 'Bitcoin Core RPC', detail: 'getpeerinfo, getblockchaininfo' },
+    { key: 'parca', name: 'Parca Profiling', detail: 'CPU flame graphs' },
+    { key: 'debug_logs', name: 'Debug Logs', detail: 'debug.log pre-fetch' },
+    { key: 'profiles', name: 'Peer Profiles', detail: 'SQLite identity tracking' },
+    { key: 'viewer', name: 'Log Viewer', detail: '/logs endpoint' },
+  ];
+
+  document.getElementById('features').innerHTML = features.map(f => {
+    const on = data.features[f.key];
+    return `<div class="feature">
+      <div class="dot ${on ? 'on' : 'off'}"></div>
+      <span class="name">${f.name}</span>
+      <span class="detail">${on ? 'enabled' : 'disabled'}</span>
+    </div>`;
+  }).join('');
+
+  // Hosts
+  if (data.hosts && data.hosts.length > 0) {
+    document.getElementById('hosts').innerHTML = data.hosts.map(h => {
+      const badges = [];
+      if (h.rpc) badges.push('<span class="host-badge rpc">rpc</span>');
+      if (h.parca) badges.push('<span class="host-badge parca">parca</span>');
+      if (h.debug_log) badges.push('<span class="host-badge debug-log">debug.log</span>');
+      return `<div class="host-row">
+        <span class="host-name">${h.name}</span>
+        <span class="host-ip mono">${h.ip}</span>
+        <span class="host-badges">${badges.join('')}</span>
+      </div>`;
+    }).join('');
+  } else {
+    document.getElementById('hosts').innerHTML = '<div class="loading">No RPC hosts configured</div>';
+  }
+
+  // Runtime
+  const rt = [];
+  rt.push(`<span>Cooldown: <b class="mono">${data.cooldown_secs}s</b></span>`);
+  rt.push(`<span>Max concurrent: <b class="mono">${data.max_concurrent}</b></span>`);
+  rt.push(`<span>Claude timeout: <b class="mono">${data.claude_timeout_secs}s</b></span>`);
+  rt.push(`<span>Model: <b class="mono">${data.claude_model}</b></span>`);
+  document.getElementById('runtime').innerHTML = rt.join('');
+}
+</script>
+</body>
+</html>

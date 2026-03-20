@@ -218,6 +218,7 @@ pub(crate) fn load() -> Result<RuntimeConfig> {
         parca_client,
         debug_log_client,
         investigation_semaphore: Semaphore::new(max_concurrent),
+        max_concurrent,
         cooldown: Duration::from_secs(cooldown_secs),
         cooldown_map: std::sync::Mutex::new(HashMap::new()),
         profile_db,
