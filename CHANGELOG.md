@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-03-20
+
 ### Added
 
 - Add home dashboard at `/` with feature status display showing which data sources (RPC, Parca, debug logs, peer profiles, log viewer) are enabled, per-node capability badges, and runtime configuration. Designed to be mounted at `/agent/` via nginx reverse proxy.

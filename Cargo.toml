@@ -1,6 +1,6 @@
 [package]
 name = "peer-observer-agent"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 license = "MIT"
 description = "AI agents for peer-observer Bitcoin P2P network monitoring"
