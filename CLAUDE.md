@@ -33,13 +33,14 @@ nix build                      # Build via flake (Linux/CI)
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/main.rs` | Bootstrap only: tracing init → config load → server run |
+| `src/main.rs` | Bootstrap: tracing init, then mode dispatch — HTTP service (default) or one-shot `sweep` |
 | `src/config.rs` | Env var parsing (`ANNOTATION_AGENT_*`), `RuntimeConfig` + `AppState` construction |
 | `src/server.rs` | HTTP router assembly, webhook/healthz/version handlers, `axum::serve` |
 | `src/processor.rs` | `process_alert` orchestrator, annotation result handling, log appending |
 | `src/alerts/` | Typed alert catalog (`KnownAlert` enum), `AlertSpec` with nested per-source specs |
 | `src/context.rs` | Neutral `ContextSection` transport — extractors produce, prompt renders |
 | `src/sanitization.rs` | Shared sanitization helpers (XML escaping, host/control-char stripping) |
+| `src/sweep/` | Deterministic interestingness sweep: signal catalog, robust-stats detectors, Prometheus client, digest rendering |
 | `src/prompt/` | Investigation prompt generation, PromQL sanitization, fast-path |
 | `src/prompt/instructions/` | Per-family investigation steps (connections, performance, chain, etc.) |
 | `src/investigation/` | `collector.rs` (context fetching) + `runner.rs` (Claude CLI subprocess) |
