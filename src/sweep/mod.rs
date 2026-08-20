@@ -226,6 +226,14 @@ pub(crate) fn build_report(
             let split = values.len().saturating_sub(recent_samples);
             let (baseline, recent) = values.split_at(split.max(1).min(values.len()));
 
+            // The residual baseline must exclude at least the smoothed tail:
+            // with a recent window shorter than the tail, the samples being
+            // scored would otherwise sit inside their own baseline.
+            let residual_split = values
+                .len()
+                .saturating_sub(recent_samples.max(RESIDUAL_TAIL_SAMPLES));
+            let residual_baseline = &values[..residual_split.max(1).min(values.len())];
+
             if spec.detectors.contains(&Detector::Residual) {
                 // Smooth over a short tail rather than scoring the single latest
                 // sample. On spiky per-observation gauges one transient (a slow
@@ -234,8 +242,10 @@ pub(crate) fn build_report(
                 // excursion happened recently", which stays distinct from the
                 // change-point detector's "the level shifted and stayed there".
                 if let Some(observed) = smoothed_tail(&values, RESIDUAL_TAIL_SAMPLES) {
-                    if let Some(z) = stats::robust_z(observed, baseline, config.min_samples) {
-                        let base = stats::median(baseline).unwrap_or(0.0);
+                    if let Some(z) =
+                        stats::robust_z(observed, residual_baseline, config.min_samples)
+                    {
+                        let base = stats::median(residual_baseline).unwrap_or(0.0);
                         if z.abs() >= config.z_threshold
                             && clears_effect_floor(spec, observed, base)
                         {
@@ -565,6 +575,33 @@ mod tests {
         Detector::PeerGroup,
         Detector::ChangePoint,
     ];
+
+    #[test]
+    fn residual_baseline_excludes_smoothed_tail_when_recent_window_is_short() {
+        // A 5m recent window at a 5m step is a 1-sample recent window, shorter
+        // than the 3-sample smoothed tail. The excursion samples must still be
+        // excluded from the residual baseline, or they contaminate it: with
+        // values [10, 10, 100, 100, 100] a contaminated baseline of
+        // [10, 10, 100, 100] has median 55 and a wide scale, and the excursion
+        // scores as unremarkable.
+        let config = SweepConfig {
+            recent: ChronoDuration::minutes(5),
+            min_samples: 2,
+            ..SweepConfig::default()
+        };
+        let specs = [spec_named("excursion", &[Detector::Residual])];
+        let fetched = vec![Ok(vec![host_series(
+            "node01",
+            &[10.0, 10.0, 100.0, 100.0, 100.0],
+        )])];
+        let (start, end) = window();
+        let report = build_report(&config, &specs, fetched, start, end).unwrap();
+        assert_eq!(report.findings.len(), 1);
+        let f = &report.findings[0];
+        assert_eq!(f.kind, FindingKind::ResidualSpike);
+        assert_eq!(f.observed, 100.0);
+        assert_eq!(f.baseline, 10.0, "baseline must not include the excursion");
+    }
 
     #[test]
     fn score_combines_magnitude_metric_weight_and_kind() {
