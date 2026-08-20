@@ -294,6 +294,11 @@ pub(crate) fn build_report(
                 .iter()
                 .filter_map(|s| {
                     let values = s.values();
+                    // Same gate as the per-series detectors: a host without
+                    // enough history has no business being compared to peers.
+                    if values.len() < config.min_samples {
+                        return None;
+                    }
                     let tail = values.len().saturating_sub(recent_samples);
                     stats::median(&values[tail..]).map(|v| (s.label("host"), v))
                 })
@@ -575,6 +580,23 @@ mod tests {
         Detector::PeerGroup,
         Detector::ChangePoint,
     ];
+
+    #[test]
+    fn sparse_host_is_excluded_from_peer_group_comparison() {
+        // node04 differs wildly from its peers but has only two samples,
+        // below min_samples: it must not surface as an outlier.
+        let config = fixture_config();
+        let specs = [spec_named("peers", &[Detector::PeerGroup])];
+        let fetched = vec![Ok(vec![
+            host_series("node01", &[10.0; 24]),
+            host_series("node02", &[10.0; 24]),
+            host_series("node03", &[10.0; 24]),
+            host_series("node04", &[100.0, 100.0]),
+        ])];
+        let (start, end) = window();
+        let report = build_report(&config, &specs, fetched, start, end).unwrap();
+        assert!(report.findings.is_empty());
+    }
 
     #[test]
     fn residual_baseline_excludes_smoothed_tail_when_recent_window_is_short() {
