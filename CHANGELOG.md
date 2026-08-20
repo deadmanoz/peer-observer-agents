@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the deterministic interestingness sweep (`src/sweep/`) and a `sweep` binary mode, the first component of the v2 analyst's zero-LLM tier. It walks a curated 20-signal catalog weighted toward network-level/P2P telemetry, applies three robust detectors (residual against a series' own history, cross-sectional peer-group comparison, and two-window change-point), and emits a ranked digest as Markdown or JSON. Configured via `ANNOTATION_AGENT_SWEEP_*` environment variables; no model is involved at any point. Failed queries are listed in the digest as a partial-sweep warning, and a sweep where every query fails exits non-zero, so a Prometheus outage cannot render as a quiet network.
+- Add a direct Prometheus HTTP API client (`src/sweep/prometheus.rs`). Previously the service reached Prometheus only through the Claude CLI's MCP tools, which meant every query cost a model call.
+
+  Statistics are deliberately non-parametric (median/MAD rather than mean/stddev) because v1's adaptive alert bands used mean±stddev and suffered band contraction and self-contamination: a few anomalous samples pulled the baseline toward the anomaly until normal traffic began firing. The robust scale carries a minimum-width floor and z-scores are capped, so flat and zero-baseline series cannot manufacture enormous scores.
+
 ## [0.7.1] - 2026-03-20
 
 ### Added
