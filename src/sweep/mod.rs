@@ -14,7 +14,7 @@ pub(crate) mod stats;
 use anyhow::{Context, Result};
 use catalog::{Detector, MetricSpec};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use prometheus::PromClient;
+use prometheus::{PromClient, Series};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use tracing::{debug, warn};
@@ -166,20 +166,43 @@ pub(crate) async fn run_with(
 ) -> Result<SweepReport> {
     let end = Utc::now();
     let start = end - config.lookback;
+
+    let mut fetched = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let outcome = client
+            .query_range(spec.query, start.timestamp(), end.timestamp(), &config.step)
+            .await;
+        if let Err(e) = &outcome {
+            // A broken query must not abort the sweep; record and continue.
+            warn!(metric = spec.name, error = %e, "sweep query failed");
+        }
+        fetched.push(outcome);
+    }
+
+    build_report(config, specs, fetched, start, end)
+}
+
+/// Assemble the report from fetched series, one outcome per spec.
+///
+/// Separated from the network fetch so the detector wiring, the
+/// baseline/recent split, and the all-queries-failed guarantee can be
+/// exercised with fixture data.
+pub(crate) fn build_report(
+    config: &SweepConfig,
+    specs: &[MetricSpec],
+    fetched: Vec<Result<Vec<Series>>>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<SweepReport> {
     let mut findings = Vec::new();
     let mut empty_metrics = Vec::new();
     let mut failed_metrics = Vec::new();
     let mut series_examined = 0usize;
 
-    for spec in specs {
-        let series = match client
-            .query_range(spec.query, start.timestamp(), end.timestamp(), &config.step)
-            .await
-        {
+    for (spec, outcome) in specs.iter().zip(fetched) {
+        let series = match outcome {
             Ok(s) => s,
-            Err(e) => {
-                // A broken query must not abort the sweep; record and continue.
-                warn!(metric = spec.name, error = %e, "sweep query failed");
+            Err(_) => {
                 failed_metrics.push(spec.name.to_string());
                 continue;
             }
@@ -414,6 +437,134 @@ mod tests {
             min_absolute: 0.0,
         }
     }
+
+    fn spec_named(name: &'static str, detectors: &'static [Detector]) -> MetricSpec {
+        MetricSpec {
+            name,
+            query: "test",
+            weight: 1.0,
+            rationale: "test rationale",
+            detectors,
+            min_absolute: 1.0,
+        }
+    }
+
+    /// 15m recent window at a 5m step = a 3-sample recent window, which also
+    /// satisfies window_shift's min_samples requirement on the recent side.
+    fn fixture_config() -> SweepConfig {
+        SweepConfig {
+            recent: ChronoDuration::minutes(15),
+            min_samples: 3,
+            ..SweepConfig::default()
+        }
+    }
+
+    fn host_series(host: &str, values: &[f64]) -> Series {
+        let mut labels = BTreeMap::new();
+        labels.insert("host".to_string(), host.to_string());
+        Series {
+            labels,
+            samples: values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as f64, *v))
+                .collect(),
+        }
+    }
+
+    fn window() -> (DateTime<Utc>, DateTime<Utc>) {
+        let end = Utc::now();
+        (end - ChronoDuration::hours(24), end)
+    }
+
+    #[test]
+    fn build_report_errors_when_every_query_failed() {
+        let config = fixture_config();
+        let specs = [
+            spec_named("a", &[Detector::Residual]),
+            spec_named("b", &[Detector::Residual]),
+        ];
+        let fetched = vec![Err(anyhow::anyhow!("boom")), Err(anyhow::anyhow!("boom"))];
+        let (start, end) = window();
+        let err = build_report(&config, &specs, fetched, start, end).unwrap_err();
+        assert!(err.to_string().contains("all 2 sweep queries failed"));
+    }
+
+    #[test]
+    fn build_report_records_failed_and_empty_metrics() {
+        let config = fixture_config();
+        let specs = [
+            spec_named("broken", &[Detector::Residual]),
+            spec_named("silent", &[Detector::Residual]),
+            spec_named("flat", &[Detector::Residual]),
+        ];
+        let fetched = vec![
+            Err(anyhow::anyhow!("boom")),
+            Ok(vec![]),
+            Ok(vec![host_series("node01", &[10.0; 24])]),
+        ];
+        let (start, end) = window();
+        let report = build_report(&config, &specs, fetched, start, end).unwrap();
+        assert_eq!(report.failed_metrics, vec!["broken"]);
+        assert_eq!(report.empty_metrics, vec!["silent"]);
+        assert_eq!(report.series_examined, 1);
+        assert!(report.findings.is_empty(), "flat series must not fire");
+    }
+
+    #[test]
+    fn change_point_fires_when_recent_window_steps_to_new_level() {
+        let config = fixture_config();
+        let specs = [spec_named("stepped", &[Detector::ChangePoint])];
+        // 21 baseline samples at 10.0, then a 3-sample recent window at 100.0.
+        let mut values = vec![10.0; 21];
+        values.extend_from_slice(&[100.0; 3]);
+        let fetched = vec![Ok(vec![host_series("node01", &values)])];
+        let (start, end) = window();
+        let report = build_report(&config, &specs, fetched, start, end).unwrap();
+        assert_eq!(report.findings.len(), 1);
+        let f = &report.findings[0];
+        assert_eq!(f.kind, FindingKind::ChangePoint);
+        assert_eq!(f.subject, "node01");
+        // The split must put exactly the recent window on the "after" side:
+        // median(recent) = 100, median(baseline) = 10.
+        assert_eq!(f.observed, 100.0);
+        assert_eq!(f.baseline, 10.0);
+    }
+
+    #[test]
+    fn peer_group_outlier_is_flagged_across_hosts() {
+        let config = fixture_config();
+        let specs = [spec_named("peers", &[Detector::PeerGroup])];
+        let fetched = vec![Ok(vec![
+            host_series("node01", &[10.0; 24]),
+            host_series("node02", &[10.0; 24]),
+            host_series("node03", &[10.0; 24]),
+            host_series("node04", &[100.0; 24]),
+        ])];
+        let (start, end) = window();
+        let report = build_report(&config, &specs, fetched, start, end).unwrap();
+        assert_eq!(report.findings.len(), 1);
+        let f = &report.findings[0];
+        assert_eq!(f.kind, FindingKind::PeerGroupOutlier);
+        assert_eq!(f.subject, "node04");
+    }
+
+    #[test]
+    fn series_below_min_samples_is_examined_but_never_scored() {
+        let config = fixture_config();
+        let specs = [spec_named("short", ALL_DETECTORS)];
+        let fetched = vec![Ok(vec![host_series("node01", &[10.0, 100.0])])];
+        let (start, end) = window();
+        let report = build_report(&config, &specs, fetched, start, end).unwrap();
+        assert_eq!(report.series_examined, 1);
+        assert!(report.findings.is_empty());
+    }
+
+    const ALL_DETECTORS: &[Detector] = &[
+        Detector::Residual,
+        Detector::PeerGroup,
+        Detector::ChangePoint,
+    ];
 
     #[test]
     fn score_combines_magnitude_metric_weight_and_kind() {
